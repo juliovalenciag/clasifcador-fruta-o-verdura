@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from sklearn.base import BaseEstimator, clone
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.metrics import (
@@ -26,12 +27,16 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from tqdm import tqdm
 
 from .baseline import CLASSES
-from .classic_features import FeatureConfig, extract_classic_features
+from .classic_features import (
+    BlockBalancedScaler,
+    FeatureConfig,
+    extract_classic_features,
+    safe_rgb,
+)
 
 
 def _eligible(frame: pd.DataFrame, split: str) -> pd.DataFrame:
@@ -187,7 +192,7 @@ def _extract_features(
         try:
             path = Path(row["path"])
             with Image.open(path) as opened:
-                source = ImageOps.exif_transpose(opened).convert("RGB")
+                source = safe_rgb(opened)
             row_vectors = [extract_classic_features(source, config)]
             for variant in range(augmentations):
                 noisy = _make_noisy_variant(
@@ -221,10 +226,18 @@ def _extract_features(
     return np.stack(vectors), np.asarray(labels), accepted
 
 
-def _candidate_estimators(seed: int) -> dict[str, BaseEstimator]:
+def _candidate_estimators(
+    seed: int,
+    config: FeatureConfig | None = None,
+) -> dict[str, BaseEstimator]:
+    cfg = config or FeatureConfig()
+    make_scaler = lambda: BlockBalancedScaler(
+        color_dim=cfg.color_feature_count,
+        lbp_dim=cfg.lbp_feature_count,
+    )
     scaled_logistic = lambda c: Pipeline(
         [
-            ("scale", StandardScaler()),
+            ("scale", make_scaler()),
             (
                 "classifier",
                 LogisticRegression(
@@ -242,7 +255,7 @@ def _candidate_estimators(seed: int) -> dict[str, BaseEstimator]:
         "logistic_c10": scaled_logistic(10.0),
         "sgd_log": Pipeline(
             [
-                ("scale", StandardScaler()),
+                ("scale", make_scaler()),
                 (
                     "classifier",
                     SGDClassifier(
@@ -258,32 +271,38 @@ def _candidate_estimators(seed: int) -> dict[str, BaseEstimator]:
         ),
         "svm_rbf_c10": Pipeline(
             [
-                ("scale", StandardScaler()),
+                ("scale", make_scaler()),
                 (
                     "classifier",
-                    SVC(
-                        C=10.0,
-                        gamma="scale",
-                        probability=True,
-                        class_weight="balanced",
-                        cache_size=2048,
-                        random_state=seed,
+                    CalibratedClassifierCV(
+                        SVC(
+                            C=10.0,
+                            gamma="scale",
+                            class_weight="balanced",
+                            cache_size=2048,
+                            random_state=seed,
+                        ),
+                        cv=3,
+                        ensemble=False,
                     ),
                 ),
             ]
         ),
         "svm_rbf_c30": Pipeline(
             [
-                ("scale", StandardScaler()),
+                ("scale", make_scaler()),
                 (
                     "classifier",
-                    SVC(
-                        C=30.0,
-                        gamma="scale",
-                        probability=True,
-                        class_weight="balanced",
-                        cache_size=2048,
-                        random_state=seed,
+                    CalibratedClassifierCV(
+                        SVC(
+                            C=30.0,
+                            gamma="scale",
+                            class_weight="balanced",
+                            cache_size=2048,
+                            random_state=seed,
+                        ),
+                        cv=3,
+                        ensemble=False,
                     ),
                 ),
             ]
@@ -291,14 +310,15 @@ def _candidate_estimators(seed: int) -> dict[str, BaseEstimator]:
         "extra_trees_sqrt": ExtraTreesClassifier(
             n_estimators=500,
             max_features="sqrt",
+            min_samples_leaf=5,
             class_weight="balanced",
             n_jobs=-1,
             random_state=seed,
         ),
         "extra_trees_040": ExtraTreesClassifier(
             n_estimators=500,
-            max_features=0.40,
-            min_samples_leaf=2,
+            max_features=0.25,
+            min_samples_leaf=5,
             class_weight="balanced",
             n_jobs=-1,
             random_state=seed,
@@ -481,7 +501,7 @@ def train_classical_suite(
     if set(np.unique(y_train)) != set(CLASSES):
         raise ValueError("Train debe contener ejemplos válidos de fruta y verdura.")
 
-    templates = _candidate_estimators(seed)
+    templates = _candidate_estimators(seed, config)
     fitted: dict[str, BaseEstimator] = {}
     validation_metrics: dict[str, dict[str, object]] = {}
     selection_rows: list[dict[str, object]] = []

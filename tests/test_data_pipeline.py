@@ -349,9 +349,31 @@ def test_classic_features_are_deterministic() -> None:
     first = extract_classic_features(image, config)
     second = extract_classic_features(image, config)
     assert first.ndim == 1
-    assert len(first) > 1000
+    assert len(first) == 2068
     assert first.dtype.name == "float32"
     assert (first == second).all()
+
+
+def test_block_balanced_scaler_equalizes_block_variances() -> None:
+    import numpy as np
+    from frutas.classic_features import BlockBalancedScaler, safe_rgb
+
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=(64, 2068)).astype(np.float32)
+    scaler = BlockBalancedScaler(color_dim=252, lbp_dim=52).fit(x)
+    z = scaler.transform(x)
+    color_var = float(z[:, :252].var(axis=0).sum())
+    hog_var = float(z[:, 252:2016].var(axis=0).sum())
+    lbp_var = float(z[:, 2016:].var(axis=0).sum())
+    assert color_var == __import__("pytest").approx(1.0, rel=1e-4)
+    assert hog_var == __import__("pytest").approx(1.0, rel=1e-4)
+    assert lbp_var == __import__("pytest").approx(1.0, rel=1e-4)
+
+    palette_img = Image.new("P", (32, 32), 0)
+    palette_img.info["transparency"] = b"\x00"
+    rgb_img = safe_rgb(palette_img)
+    assert rgb_img.mode == "RGB"
+
 
 
 def test_svm_sampling_is_reproducible_and_balanced() -> None:

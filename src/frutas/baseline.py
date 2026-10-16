@@ -21,21 +21,37 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-from .classic_features import FeatureConfig, extract_classic_features
+from .classic_features import (
+    BlockBalancedScaler,
+    FeatureConfig,
+    extract_classic_features,
+)
 
 
 CLASSES = ("fruta", "verdura")
 
 
-def _fit_classifier(features: np.ndarray, labels: np.ndarray, seed: int) -> BaseEstimator:
+def _fit_classifier(
+    features: np.ndarray,
+    labels: np.ndarray,
+    seed: int,
+    config: FeatureConfig | None = None,
+) -> BaseEstimator:
     unique = set(np.unique(labels))
     if unique != set(CLASSES):
         raise ValueError(
             "El entrenamiento requiere ejemplos aprobados de ambas clases: fruta y verdura."
         )
+    cfg = config or FeatureConfig()
     return Pipeline(
         [
-            ("scale", StandardScaler()),
+            (
+                "scale",
+                BlockBalancedScaler(
+                    color_dim=cfg.color_feature_count,
+                    lbp_dim=cfg.lbp_feature_count,
+                ),
+            ),
             (
                 "classifier",
                 SGDClassifier(
