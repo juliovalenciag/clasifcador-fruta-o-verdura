@@ -1,0 +1,113 @@
+version: 1
+
+# Los originales son inmutables. Se habilita primero una fuente con ambas clases;
+# las demás se activan después de completar su mapeo y revisar su balance.
+datasets:
+  - id: fruits262
+    name: Fruits-262
+    url: https://www.kaggle.com/datasets/aelchimminut/fruits262
+    kaggle_handle: aelchimminut/fruits262
+    path: data/raw/fruits262
+    role: trainable
+    enabled: false
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: fruits360
+    name: Fruits-360 100x100
+    url: https://github.com/fruits-360/fruits-360-100x100
+    path: data/raw/fruits360
+    role: trainable
+    enabled: false
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: kritikseth36
+    name: Fruit and Vegetable Image Recognition
+    url: https://www.kaggle.com/datasets/Kritikseth/fruit-and-vegetable-image-recognition/
+    # Versión fijada para que todo el equipo use exactamente los mismos archivos.
+    kaggle_handle: kritikseth/fruit-and-vegetable-image-recognition/versions/8
+    path: data/raw/kritikseth36
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: fruits_youssef
+    name: Fruit and Vegetables Classification
+    url: https://www.kaggle.com/datasets/youssefsalahzakria/fruit-and-vegetables-classification
+    # Versión 5: 72,000+ imágenes, 50 categorías, aproximadamente 5.4 GB.
+    kaggle_handle: youssefsalahzakria/fruit-and-vegetables-classification/versions/5
+    path: data/raw/fruits_youssef
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: lvis_fruits_vegetables
+    name: LVIS Fruits And Vegetables
+    url: https://huggingface.co/datasets/henningheyen/LVIS_Fruits_And_Vegetables
+    # Commit fijado para que todos descarguen exactamente los mismos archivos.
+    huggingface_repo: henningheyen/LVIS_Fruits_And_Vegetables
+    huggingface_revision: 51362ad3532292d29e63f9e46c2cd33945ffe6b5
+    download_path: data/raw/lvis_fruits_vegetables
+    # `prepare-lvis` crea recortes por caja sin modificar los originales.
+    path: data/derived/lvis_fruits_vegetables
+    allow_patterns:
+      - images/**
+    # Evita miles de solicitudes HTTP separadas para etiquetas diminutas.
+    huggingface_git_metadata_paths:
+      - labels
+      - data.yaml
+      - README.md
+    download_workers: 8
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: google_shared
+    name: Dataset compartido por Google
+    url: https://share.google/jp8Kra6Z0zI7dGpQf
+    path: data/raw/google_shared
+    role: trainable
+    enabled: false
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  # Fotos del equipo que sí pueden participar en entrenamiento.
+  - id: team_photos_train
+    name: Fotografías del equipo para entrenamiento
+    path: data/raw/team_photos_train
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases: {}
+
+  # Este conjunto se congela como prueba externa y no se mezcla con train.
+  - id: team_photos
+    name: Fotografías del equipo para prueba externa
+    path: data/external/team_photos
+    role: external
+    enabled: true
+    label_from: parent
+    split_aliases: {}
+

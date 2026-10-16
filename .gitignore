@@ -1,0 +1,24 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+artifacts/*
+!artifacts/.gitkeep
+
+# Los datasets y artefactos generados no se versionan.
+data/raw/*
+data/derived/*
+data/interim/*
+data/processed/*
+data/external/*
+data/quarantine/*
+!data/raw/.gitkeep
+!data/derived/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+!data/quarantine/.gitkeep
+

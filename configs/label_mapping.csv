@@ -1,0 +1,161 @@
+source,original_label,class_id,status,notes
+fruits360,Apple Braeburn,fruta,approved,
+fruits360,Apple Golden 1,fruta,approved,
+fruits360,Apple Granny Smith,fruta,approved,
+fruits360,Apple Red Delicious,fruta,approved,
+fruits360,Banana,fruta,approved,
+fruits360,Banana Red,fruta,approved,
+fruits360,Orange,fruta,approved,
+fruits360,Tomato 1,fruta,approved,Criterio botánico
+fruits360,Carrot 1,verdura,approved,
+kritikseth36,apple,fruta,approved,
+kritikseth36,banana,fruta,approved,
+kritikseth36,grapes,fruta,approved,
+kritikseth36,kiwi,fruta,approved,
+kritikseth36,lemon,fruta,approved,
+kritikseth36,mango,fruta,approved,
+kritikseth36,orange,fruta,approved,
+kritikseth36,pear,fruta,approved,
+kritikseth36,pineapple,fruta,approved,
+kritikseth36,pomegranate,fruta,approved,
+kritikseth36,watermelon,fruta,approved,
+kritikseth36,beetroot,verdura,approved,
+kritikseth36,cabbage,verdura,approved,
+kritikseth36,carrot,verdura,approved,
+kritikseth36,cauliflower,verdura,approved,
+kritikseth36,garlic,verdura,approved,
+kritikseth36,ginger,verdura,approved,
+kritikseth36,lettuce,verdura,approved,
+kritikseth36,onion,verdura,approved,
+kritikseth36,potato,verdura,approved,
+kritikseth36,raddish,verdura,approved,Ortografía original del dataset
+kritikseth36,spinach,verdura,approved,
+kritikseth36,sweetpotato,verdura,approved,
+kritikseth36,turnip,verdura,approved,
+kritikseth36,bell pepper,fruta,approved,Criterio botánico
+kritikseth36,capsicum,fruta,approved,Criterio botánico
+kritikseth36,chilli pepper,fruta,approved,Criterio botánico
+kritikseth36,corn,fruta,approved,Criterio botánico
+kritikseth36,cucumber,fruta,approved,Criterio botánico
+kritikseth36,eggplant,fruta,approved,Criterio botánico
+kritikseth36,jalepeno,fruta,approved,Ortografía original del dataset; criterio botánico
+kritikseth36,paprika,fruta,approved,Criterio botánico
+kritikseth36,peas,fruta,approved,Criterio botánico unificado
+kritikseth36,soy beans,fruta,approved,Criterio botánico unificado
+kritikseth36,sweetcorn,fruta,approved,Criterio botánico unificado
+kritikseth36,tomato,fruta,approved,Criterio botánico
+fruits_youssef,Apple,fruta,approved,
+fruits_youssef,Avocado,fruta,approved,
+fruits_youssef,Banana,fruta,approved,
+fruits_youssef,Beetroot,verdura,approved,
+fruits_youssef,Blackberry,fruta,approved,
+fruits_youssef,Blueberry,fruta,approved,
+fruits_youssef,Broccoli,verdura,approved,Flor y tallo
+fruits_youssef,Cabbage,verdura,approved,
+fruits_youssef,Capsicum,fruta,approved,Criterio botánico
+fruits_youssef,Carrot,verdura,approved,
+fruits_youssef,Cauliflower,verdura,approved,
+fruits_youssef,Chilli Peper,fruta,approved,Criterio botánico; ortografía de la fuente
+fruits_youssef,Corn,fruta,approved,Criterio botánico
+fruits_youssef,Cucumber,fruta,approved,Criterio botánico
+fruits_youssef,Dates,fruta,approved,
+fruits_youssef,Dragonfruit,fruta,approved,
+fruits_youssef,Eggplant,fruta,approved,Criterio botánico
+fruits_youssef,Fig,fruta,approved,
+fruits_youssef,Garlic,verdura,approved,
+fruits_youssef,Ginger,verdura,approved,
+fruits_youssef,Grapes,fruta,approved,
+fruits_youssef,Guava,fruta,approved,
+fruits_youssef,Jalepeno,fruta,approved,Criterio botánico; ortografía de la fuente
+fruits_youssef,Kiwi,fruta,approved,
+fruits_youssef,Lemon,fruta,approved,
+fruits_youssef,Lettuce,verdura,approved,
+fruits_youssef,Mango,fruta,approved,
+fruits_youssef,Mushroom,,rejected,Hongo fuera del alcance binario
+fruits_youssef,Okra,fruta,approved,Criterio botánico
+fruits_youssef,Olive,fruta,approved,
+fruits_youssef,Onion,verdura,approved,
+fruits_youssef,Orange,fruta,approved,
+fruits_youssef,Paprika,fruta,approved,Criterio botánico
+fruits_youssef,Peanuts,,rejected,Semilla fuera del alcance binario acordado
+fruits_youssef,Pear,fruta,approved,
+fruits_youssef,Peas,fruta,approved,Criterio botánico unificado
+fruits_youssef,Pineapple,fruta,approved,
+fruits_youssef,Pomegranate,fruta,approved,
+fruits_youssef,Potato,verdura,approved,
+fruits_youssef,Pumpkin,fruta,approved,Criterio botánico
+fruits_youssef,Raddish,verdura,approved,Ortografía de la fuente
+fruits_youssef,Rambutan,fruta,approved,
+fruits_youssef,Soy Beans,fruta,approved,Criterio botánico unificado
+fruits_youssef,Spinach,verdura,approved,
+fruits_youssef,Strawberry,fruta,approved,Fruto agregado/accesorio
+fruits_youssef,Sweetcorn,fruta,approved,Criterio botánico unificado
+fruits_youssef,Sweetpotato,verdura,approved,
+fruits_youssef,Tomato,fruta,approved,Criterio botánico
+fruits_youssef,Turnip,verdura,approved,
+fruits_youssef,Watermelon,fruta,approved,
+lvis_fruits_vegetables,almond,,rejected,Semilla fuera del alcance binario
+lvis_fruits_vegetables,apple,fruta,approved,
+lvis_fruits_vegetables,apricot,fruta,approved,
+lvis_fruits_vegetables,artichoke,verdura,approved,Flor
+lvis_fruits_vegetables,asparagus,verdura,approved,Tallo
+lvis_fruits_vegetables,avocado,fruta,approved,
+lvis_fruits_vegetables,banana,fruta,approved,
+lvis_fruits_vegetables,bean curd tofu,,rejected,Alimento procesado
+lvis_fruits_vegetables,bell pepper,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,blackberry,fruta,approved,
+lvis_fruits_vegetables,blueberry,fruta,approved,
+lvis_fruits_vegetables,broccoli,verdura,approved,Flor y tallo
+lvis_fruits_vegetables,brussels sprouts,verdura,approved,Yema foliar
+lvis_fruits_vegetables,cantaloupe,fruta,approved,
+lvis_fruits_vegetables,carrot,verdura,approved,Raíz
+lvis_fruits_vegetables,cauliflower,verdura,approved,Flor
+lvis_fruits_vegetables,cayenne pepper,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,celery,verdura,approved,Tallo y hoja
+lvis_fruits_vegetables,cherry,fruta,approved,
+lvis_fruits_vegetables,chickpea,,rejected,Semilla fuera del alcance binario
+lvis_fruits_vegetables,chili pepper,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,clementine,fruta,approved,
+lvis_fruits_vegetables,coconut,fruta,approved,
+lvis_fruits_vegetables,corn,fruta,approved,Convención botánica unificada
+lvis_fruits_vegetables,cucumber,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,date,fruta,approved,
+lvis_fruits_vegetables,eggplant,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,fig,fruta,approved,
+lvis_fruits_vegetables,garlic,verdura,approved,Bulbo
+lvis_fruits_vegetables,ginger,verdura,approved,Rizoma
+lvis_fruits_vegetables,strawberry,fruta,approved,Fruto agregado o accesorio
+lvis_fruits_vegetables,gourd,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,grape,fruta,approved,
+lvis_fruits_vegetables,green bean,fruta,approved,Vaina
+lvis_fruits_vegetables,green onion,verdura,approved,Bulbo y hoja
+lvis_fruits_vegetables,tomato,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,kiwi,fruta,approved,
+lvis_fruits_vegetables,lemon,fruta,approved,
+lvis_fruits_vegetables,lettuce,verdura,approved,Hoja
+lvis_fruits_vegetables,lime,fruta,approved,
+lvis_fruits_vegetables,mandarin orange,fruta,approved,
+lvis_fruits_vegetables,melon,fruta,approved,
+lvis_fruits_vegetables,mushroom,,rejected,Hongo fuera del alcance binario
+lvis_fruits_vegetables,onion,verdura,approved,Bulbo
+lvis_fruits_vegetables,orange,fruta,approved,
+lvis_fruits_vegetables,papaya,fruta,approved,
+lvis_fruits_vegetables,pea,fruta,approved,Convención botánica unificada
+lvis_fruits_vegetables,peach,fruta,approved,
+lvis_fruits_vegetables,pear,fruta,approved,
+lvis_fruits_vegetables,persimmon,fruta,approved,
+lvis_fruits_vegetables,pickle,,rejected,Alimento procesado
+lvis_fruits_vegetables,pineapple,fruta,approved,
+lvis_fruits_vegetables,potato,verdura,approved,Tubérculo
+lvis_fruits_vegetables,prune,fruta,approved,Fruta deshidratada
+lvis_fruits_vegetables,pumpkin,fruta,approved,Criterio botánico
+lvis_fruits_vegetables,radish,verdura,approved,Raíz
+lvis_fruits_vegetables,raspberry,fruta,approved,
+lvis_fruits_vegetables,sweet potato,verdura,approved,Tubérculo
+lvis_fruits_vegetables,turnip,verdura,approved,Raíz
+lvis_fruits_vegetables,watermelon,fruta,approved,
+lvis_fruits_vegetables,zucchini,fruta,approved,Criterio botánico
+team_photos,fruta,fruta,approved,Carpeta binaria controlada por el equipo
+team_photos,verdura,verdura,approved,Carpeta binaria controlada por el equipo
+team_photos_train,fruta,fruta,approved,Carpeta binaria controlada por el equipo
+team_photos_train,verdura,verdura,approved,Carpeta binaria controlada por el equipo
