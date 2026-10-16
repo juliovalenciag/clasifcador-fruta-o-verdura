@@ -96,12 +96,10 @@ El inventario consolidado en `data/processed/dataset.csv` y auditado en `data/in
 
 ## 5. Siguientes Pasos para el Equipo
 
-1. **Subir los cambios de `v0.6.0` a GitHub:**
-   - Hacer commit y `git push origin main` de las mejoras en código (`src/frutas/classic_features.py`, `src/frutas/classical_training.py`, `src/frutas/baseline.py`), pruebas (`tests/test_data_pipeline.py`) y documentación (`README.md`, `guia-equipo.md`, `reporte-estado-proyecto.md`, `pyproject.toml`).
-2. **Recolectar y congelar las fotografías propias del equipo (Hito de Validación Externa):**
+1. **Recolectar y congelar las fotografías propias del equipo (Hito de Validación Externa):**
    - Cada integrante debe tomar fotografías propias de frutas y verduras (enteras y cortadas, con distintos fondos e iluminación) y subirlas a la carpeta compartida de Google Drive (`team_photos_train/` y `team_photos_external/`) con el formato `integrante_AAAAMMDD_NNN.jpg`.
    - Descargarlas en `data/raw/team_photos_train/{fruta,verdura}` y `data/external/team_photos/{fruta,verdura}`.
-3. **Evaluar la generalización en el conjunto externo:**
+2. **Evaluar la generalización en el conjunto externo:**
    - Ejecutar `frutas-data all`, reentrenar con `frutas-data train-classic` y generar el reporte externo con `frutas-data evaluate-classic --split external --output artifacts/error_analysis_external.csv`.
 
 ---
