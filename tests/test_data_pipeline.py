@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -22,7 +23,7 @@ from frutas.classical_training import (
     train_classical_suite,
 )
 from frutas.dedupe import mark_duplicates
-from frutas.download import download_dataset
+from frutas.download import _download_git_paths, download_dataset
 from frutas.feedback import (
     classify_uploaded_image,
     decode_uploaded_image,
@@ -341,6 +342,49 @@ def test_huggingface_download_uses_pinned_revision(
         ("owner/lvis", "abc123", ["labels", "data.yaml"], destination)
     ]
     assert (destination / ".complete").exists()
+
+
+def test_sparse_checkout_accepts_directories_and_root_files(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", str(repository)], check=True, capture_output=True)
+    (repository / "labels").mkdir()
+    (repository / "labels" / "sample.txt").write_text("0 0.5 0.5 1 1\n")
+    (repository / "data.yaml").write_text("names: [apple]\n")
+    (repository / "README.md").write_text("dataset\n")
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Tests",
+            "-c",
+            "user.email=tests@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    destination = tmp_path / "download"
+    destination.mkdir()
+    _download_git_paths(
+        repo_url=str(repository),
+        revision=None,
+        relative_paths=["labels", "data.yaml", "README.md"],
+        destination=destination,
+    )
+
+    assert (destination / "labels" / "sample.txt").exists()
+    assert (destination / "data.yaml").read_text() == "names: [apple]\n"
+    assert (destination / "README.md").read_text() == "dataset\n"
+
 
 def test_lvis_preparation_crops_yolo_objects(tmp_path: Path) -> None:
     raw = tmp_path / "raw"

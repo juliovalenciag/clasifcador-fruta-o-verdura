@@ -43,7 +43,18 @@ def _download_git_paths(
         )
         if relative_paths:
             subprocess.run(
-                ["git", "-C", str(checkout), "sparse-checkout", "set", *relative_paths],
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "sparse-checkout",
+                    "set",
+                    # El modo cone normalmente acepta solo directorios. Algunos
+                    # datasets también requieren archivos raíz como data.yaml y
+                    # README.md; --skip-checks permite combinarlos con carpetas.
+                    "--skip-checks",
+                    *relative_paths,
+                ],
                 check=True,
                 env=environment,
                 stdout=subprocess.DEVNULL,

@@ -230,6 +230,13 @@ frutas-data download vegetable_ahmed
 frutas-data download fruits360
 ```
 
+Si una descarga de Hugging Face termina los archivos pesados pero se interrumpe
+antes de crear `.complete`, se debe ejecutar de nuevo el mismo comando **sin
+`--force`**. El cliente reutiliza `data/raw/lvis_fruits_vegetables/.cache/` y
+solo verifica o completa lo faltante; no vuelve a transferir deliberadamente
+los 1.44 GB. La advertencia sobre `HF_TOKEN` solo indica límites de velocidad
+menores para solicitudes anónimas y no invalida la descarga.
+
 La configuración fija la versión o commit de cada dataset (`kritikseth36`, `fruits_youssef`,
 `lvis_fruits_vegetables`, `vegetable_ahmed`, `fruits360`) o descarga sus particiones oficiales
 (`grocery_store` vía Git).
