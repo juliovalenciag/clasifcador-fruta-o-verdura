@@ -92,13 +92,13 @@ def main() -> None:
     classic_train.add_argument(
         "--augmentations",
         type=int,
-        default=1,
-        help="Variaciones con ruido creadas en memoria por imagen de train.",
+        default=0,
+        help="Variaciones suaves creadas en memoria por imagen de train.",
     )
     classic_train.add_argument(
         "--max-per-source-label",
         type=int,
-        default=100,
+        default=180,
         help=(
             "Máximo por fuente y etiqueta original en cada split; evita que una "
             "fuente masiva domine. 0 desactiva el límite."
@@ -107,9 +107,9 @@ def main() -> None:
     classic_train.add_argument(
         "--svm-max-rows",
         type=int,
-        default=6000,
+        default=14000,
         help=(
-            "Máximo de filas balanceadas para cada SVM RBF; los demás modelos usan "
+            "Máximo de filas balanceadas para cada SVM RBF con PCA; los demás modelos usan "
             "todas las filas. 0 desactiva el límite."
         ),
     )
@@ -123,10 +123,22 @@ def main() -> None:
 
     classic_predict = subparsers.add_parser(
         "predict-classic",
-        help="Predice fruta o verdura con el modelo clásico seleccionado.",
+        help="Predice fruta o verdura sobre una imagen o directorio completo de fotos.",
     )
-    classic_predict.add_argument("image")
+    classic_predict.add_argument(
+        "image",
+        help="Ruta a una imagen individual o a una carpeta con fotografías.",
+    )
     classic_predict.add_argument("--model", default="artifacts/classical_model.joblib")
+    classic_predict.add_argument(
+        "--output",
+        help="Ruta CSV opcional para exportar las predicciones por imagen.",
+    )
+    classic_predict.add_argument(
+        "--no-tta",
+        action="store_true",
+        help="Desactiva el ensamble de 4 vistas en tiempo de prueba (TTA).",
+    )
 
     classic_evaluate = subparsers.add_parser(
         "evaluate-classic",
@@ -139,6 +151,44 @@ def main() -> None:
     classic_evaluate.add_argument(
         "--output", default="artifacts/error_analysis_by_label.csv"
     )
+    classic_evaluate.add_argument(
+        "--exclude-source",
+        action="append",
+        default=[],
+        help=(
+            "Excluye una fuente de la evaluación; se puede repetir. Sirve para "
+            "comparar contra un test de referencia sin la fuente nueva."
+        ),
+    )
+    classic_evaluate.add_argument(
+        "--no-tta",
+        action="store_true",
+        help="Evalúa una sola vista en lugar de las 4 vistas usadas en inferencia.",
+    )
+
+    noise_evaluate = subparsers.add_parser(
+        "evaluate-noise",
+        help="Evalúa la robustez del modelo ante 8 condiciones explícitas de ruido.",
+    )
+    noise_evaluate.add_argument(
+        "--split", choices=["validation", "test", "external"], default="test"
+    )
+    noise_evaluate.add_argument("--model", default="artifacts/classical_model.joblib")
+    noise_evaluate.add_argument(
+        "--output", default="artifacts/noise_robustness.csv"
+    )
+    noise_evaluate.add_argument(
+        "--max-per-source-label",
+        type=int,
+        default=50,
+        help="Máximo de imágenes por fuente y etiqueta para el estrés de ruido (0 usa todas).",
+    )
+    noise_evaluate.add_argument(
+        "--no-tta",
+        action="store_true",
+        help="Desactiva TTA durante la prueba de estrés.",
+    )
+    noise_evaluate.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
     paths = ProjectPaths.from_root(_project_root(args.root))
@@ -237,13 +287,17 @@ def main() -> None:
         }
         print(json.dumps(summary, indent=2, ensure_ascii=False))
     if args.command == "predict-classic":
-        from .classical_training import load_classical_model
+        from .classical_training import predict_target
 
         model_path = paths.root / args.model
         if not model_path.exists():
             parser.error(f"No existe el modelo {model_path}; ejecute primero train-classic.")
-        prediction = load_classical_model(model_path).predict_path(
-            Path(args.image).resolve()
+        output_path = (paths.root / args.output) if args.output else None
+        prediction = predict_target(
+            target_path=Path(args.image),
+            model_path=model_path,
+            output_path=output_path,
+            tta=not args.no_tta,
         )
         print(json.dumps(prediction, indent=2, ensure_ascii=False))
     if args.command == "evaluate-classic":
@@ -259,10 +313,32 @@ def main() -> None:
             model_path,
             args.split,
             paths.root / args.output,
+            excluded_sources=tuple(args.exclude_source),
+            tta=not args.no_tta,
         )
         summary = {key: value for key, value in result.items() if key != "breakdown"}
         summary["breakdown_path"] = str((paths.root / args.output).resolve())
         print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if args.command == "evaluate-noise":
+        from .classical_training import evaluate_noise_robustness
+
+        model_path = paths.root / args.model
+        if not model_path.exists():
+            parser.error(f"No existe el modelo {model_path}; ejecute primero train-classic.")
+        if not paths.split_manifest.exists():
+            parser.error("No existe data/processed/dataset.csv; ejecute primero all.")
+        result = evaluate_noise_robustness(
+            manifest_path=paths.split_manifest,
+            model_path=model_path,
+            split=args.split,
+            output_path=paths.root / args.output,
+            max_per_source_label=args.max_per_source_label,
+            tta=not args.no_tta,
+            seed=args.seed,
+        )
+        result["output_path"] = str((paths.root / args.output).resolve())
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
 
 
 if __name__ == "__main__":

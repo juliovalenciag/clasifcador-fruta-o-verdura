@@ -135,13 +135,9 @@ def _extract_frame_features(
 
 
 def _eligible(frame: pd.DataFrame, split: str) -> pd.DataFrame:
-    mask = (
-        (frame["split"] == split)
-        & (frame["valid"].astype(str).str.lower() == "true")
-        & (frame["mapping_status"] == "approved")
-        & (frame["class_id"].isin(CLASSES))
-    )
-    return frame[mask].copy()
+    from .classical_training import _eligible as _classic_eligible
+
+    return _classic_eligible(frame, split)
 
 
 def train_binary_baseline(

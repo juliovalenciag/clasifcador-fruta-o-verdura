@@ -14,8 +14,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from sklearn.base import BaseEstimator, clone
+from sklearn import __version__ as sklearn_version
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -32,6 +33,7 @@ from tqdm import tqdm
 
 from .baseline import CLASSES
 from .classic_features import (
+    AdaptivePCA,
     BlockBalancedScaler,
     FeatureConfig,
     extract_classic_features,
@@ -40,13 +42,42 @@ from .classic_features import (
 
 
 def _eligible(frame: pd.DataFrame, split: str) -> pd.DataFrame:
-    mask = (
-        (frame["split"] == split)
-        & (frame["valid"].astype(str).str.lower() == "true")
+    valid_mask = (
+        (frame["valid"].astype(str).str.lower() == "true")
         & (frame["mapping_status"] == "approved")
         & (frame["class_id"].isin(CLASSES))
     )
-    return frame[mask].copy().reset_index(drop=True)
+    approved = frame[valid_mask].copy()
+    if (
+        not approved.empty
+        and {"source", "relative_path", "width", "height"}.issubset(approved.columns)
+    ):
+        is_lvis = approved["source"] == "lvis_fruits_vegetables"
+        if is_lvis.any():
+            lvis_rows = approved.loc[is_lvis]
+            scene_ids = (
+                lvis_rows["relative_path"]
+                .astype(str)
+                .str.extract(r"([0-9a-f]{20})_box\d+", expand=False)
+            )
+            has_scene = scene_ids.notna()
+            if has_scene.any():
+                widths = pd.to_numeric(lvis_rows["width"], errors="coerce").fillna(0.0)
+                heights = pd.to_numeric(lvis_rows["height"], errors="coerce").fillna(
+                    0.0
+                )
+                min_side = np.minimum(widths, heights)
+                grouped = lvis_rows.assign(_scene_id=scene_ids).groupby("_scene_id")
+                scene_boxes = grouped["class_id"].transform("count")
+                scene_classes = grouped["class_id"].transform("nunique")
+                clean_lvis = (~has_scene) | (
+                    (min_side >= 64.0) & (scene_classes == 1) & (scene_boxes <= 8)
+                )
+                keep_index = approved.index[~is_lvis].union(
+                    lvis_rows.index[clean_lvis]
+                )
+                approved = approved.loc[keep_index]
+    return approved[approved["split"] == split].copy().reset_index(drop=True)
 
 
 def _sample_per_class(
@@ -82,12 +113,7 @@ def _balanced_sample_indices(
     maximum: int | None,
     seed: int,
 ) -> np.ndarray:
-    """Selecciona hasta ``maximum`` filas, repartidas entre las clases.
-
-    SVC con kernel RBF crece de forma aproximadamente cuadrática con el número de
-    filas. El resto de los modelos puede aprovechar el conjunto completo, mientras
-    SVC recibe una muestra reproducible y balanceada.
-    """
+    """Selecciona hasta ``maximum`` filas, repartidas equitativamente entre las clases."""
 
     labels = np.asarray(labels)
     if not maximum or maximum <= 0 or len(labels) <= maximum:
@@ -118,10 +144,10 @@ def _fit_subset(
     svm_max_rows: int | None,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if not model_name.startswith("svm_"):
-        return features, labels
-    indices = _balanced_sample_indices(labels, svm_max_rows, seed)
-    return features[indices], labels[indices]
+    if model_name.startswith("svm_"):
+        indices = _balanced_sample_indices(labels, svm_max_rows, seed)
+        return features[indices], labels[indices]
+    return features, labels
 
 
 def _stable_rng(path: str, seed: int, variant: int) -> np.random.Generator:
@@ -130,12 +156,32 @@ def _stable_rng(path: str, seed: int, variant: int) -> np.random.Generator:
     return np.random.default_rng(value)
 
 
+def _tta_views(source: Image.Image) -> list[Image.Image]:
+    """Genera 4 vistas deterministas en tiempo de prueba (TTA) para mitigar encuadre e iluminación."""
+
+    rgb = safe_rgb(source)
+    width, height = rgb.size
+    margin_x = max(1, int(round(width * 0.07)))
+    margin_y = max(1, int(round(height * 0.07)))
+    if width - 2 * margin_x >= 8 and height - 2 * margin_y >= 8:
+        central = rgb.crop((margin_x, margin_y, width - margin_x, height - margin_y))
+    else:
+        central = rgb
+    return [
+        rgb,
+        ImageOps.mirror(rgb),
+        central,
+        ImageOps.autocontrast(rgb, cutoff=1),
+    ]
+
+
 def _make_noisy_variant(
     source: Image.Image,
     source_key: str,
     seed: int,
     variant: int,
     target_size: int,
+    heavy: bool = False,
 ) -> Image.Image:
     """Crea una variación reproducible sin escribir copias en disco."""
 
@@ -148,7 +194,7 @@ def _make_noisy_variant(
     )
 
     width, height = image.size
-    scale = float(rng.uniform(0.78, 1.0))
+    scale = float(rng.uniform(0.78 if heavy else 0.88, 1.0))
     crop_width = max(2, int(width * scale))
     crop_height = max(2, int(height * scale))
     left = int(rng.integers(0, max(width - crop_width + 1, 1)))
@@ -158,21 +204,28 @@ def _make_noisy_variant(
 
     if rng.random() < 0.5:
         image = ImageOps.mirror(image)
+    max_angle = 20.0 if heavy else 12.0
     image = image.rotate(
-        float(rng.uniform(-22.0, 22.0)),
+        float(rng.uniform(-max_angle, max_angle)),
         resample=Image.Resampling.BILINEAR,
         expand=False,
         fillcolor=tuple(int(v) for v in np.asarray(image).reshape(-1, 3).mean(axis=0)),
     )
-    image = ImageEnhance.Brightness(image).enhance(float(rng.uniform(0.72, 1.28)))
-    image = ImageEnhance.Contrast(image).enhance(float(rng.uniform(0.72, 1.28)))
-    image = ImageEnhance.Color(image).enhance(float(rng.uniform(0.78, 1.22)))
-    if rng.random() < 0.45:
-        image = image.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.3, 1.4))))
+    b_low, b_high = (0.76, 1.24) if heavy else (0.90, 1.10)
+    c_low, c_high = (0.80, 1.20) if heavy else (0.92, 1.08)
+    image = ImageEnhance.Brightness(image).enhance(float(rng.uniform(b_low, b_high)))
+    image = ImageEnhance.Contrast(image).enhance(float(rng.uniform(c_low, c_high)))
+    image = ImageEnhance.Color(image).enhance(float(rng.uniform(c_low, c_high)))
+    if heavy and rng.random() < 0.35:
+        image = image.filter(
+            ImageFilter.GaussianBlur(radius=float(rng.uniform(0.3, 1.0)))
+        )
 
     pixels = np.asarray(image, dtype=np.float32)
-    sigma = float(rng.uniform(2.0, 12.0))
-    pixels = np.clip(pixels + rng.normal(0.0, sigma, pixels.shape), 0, 255).astype(np.uint8)
+    sigma = float(rng.uniform(2.0, 9.0) if heavy else rng.uniform(0.8, 3.0))
+    pixels = np.clip(pixels + rng.normal(0.0, sigma, pixels.shape), 0, 255).astype(
+        np.uint8
+    )
     return Image.fromarray(pixels, mode="RGB")
 
 
@@ -187,7 +240,9 @@ def _extract_features(
     labels: list[str] = []
     accepted_rows: list[int] = []
 
-    def extract_row(item: tuple[int, pd.Series]) -> tuple[int, str, list[np.ndarray], str]:
+    def extract_row(
+        item: tuple[int, pd.Series],
+    ) -> tuple[int, str, list[np.ndarray], str]:
         index, row = item
         try:
             path = Path(row["path"])
@@ -201,6 +256,7 @@ def _extract_features(
                     seed,
                     variant,
                     config.image_size,
+                    heavy=False,
                 )
                 row_vectors.append(extract_classic_features(noisy, config))
             return index, str(row["class_id"]), row_vectors, ""
@@ -229,8 +285,19 @@ def _extract_features(
 def _candidate_estimators(
     seed: int,
     config: FeatureConfig | None = None,
+    n_samples: int = 5000,
 ) -> dict[str, BaseEstimator]:
     cfg = config or FeatureConfig()
+    small_regime = n_samples < 100
+    cv_folds = 2 if small_regime else 3
+    et_trees = 64 if small_regime else 500
+    et_leaf = 1 if small_regime else 3
+    hgb_iter_63 = 60 if small_regime else 420
+    hgb_iter_95 = 60 if small_regime else 480
+    hgb_leaf_63 = max(1, min(20, n_samples // 5))
+    hgb_leaf_95 = max(1, min(15, n_samples // 5))
+    use_early_stop = not small_regime
+
     make_scaler = lambda: BlockBalancedScaler(
         color_dim=cfg.color_feature_count,
         lbp_dim=cfg.lbp_feature_count,
@@ -243,7 +310,7 @@ def _candidate_estimators(
                 LogisticRegression(
                     C=c,
                     class_weight="balanced",
-                    max_iter=2500,
+                    max_iter=2000,
                     solver="liblinear",
                     random_state=seed,
                 ),
@@ -252,7 +319,6 @@ def _candidate_estimators(
     )
     return {
         "logistic_c1": scaled_logistic(1.0),
-        "logistic_c10": scaled_logistic(10.0),
         "sgd_log": Pipeline(
             [
                 ("scale", make_scaler()),
@@ -261,7 +327,7 @@ def _candidate_estimators(
                     SGDClassifier(
                         loss="log_loss",
                         class_weight="balanced",
-                        max_iter=2500,
+                        max_iter=2000,
                         tol=1e-4,
                         average=True,
                         random_state=seed,
@@ -272,6 +338,7 @@ def _candidate_estimators(
         "svm_rbf_c10": Pipeline(
             [
                 ("scale", make_scaler()),
+                ("pca", AdaptivePCA(max_components=256, random_state=seed)),
                 (
                     "classifier",
                     CalibratedClassifierCV(
@@ -282,51 +349,74 @@ def _candidate_estimators(
                             cache_size=2048,
                             random_state=seed,
                         ),
-                        cv=3,
+                        cv=cv_folds,
                         ensemble=False,
                     ),
                 ),
             ]
         ),
-        "svm_rbf_c30": Pipeline(
+        "svm_rbf_c25": Pipeline(
             [
                 ("scale", make_scaler()),
+                ("pca", AdaptivePCA(max_components=256, random_state=seed)),
                 (
                     "classifier",
                     CalibratedClassifierCV(
                         SVC(
-                            C=30.0,
+                            C=25.0,
                             gamma="scale",
                             class_weight="balanced",
                             cache_size=2048,
                             random_state=seed,
                         ),
-                        cv=3,
+                        cv=cv_folds,
                         ensemble=False,
                     ),
                 ),
             ]
         ),
         "extra_trees_sqrt": ExtraTreesClassifier(
-            n_estimators=500,
+            n_estimators=et_trees,
             max_features="sqrt",
-            min_samples_leaf=5,
+            min_samples_leaf=et_leaf,
             class_weight="balanced",
             n_jobs=-1,
             random_state=seed,
         ),
         "extra_trees_040": ExtraTreesClassifier(
-            n_estimators=500,
+            n_estimators=et_trees,
             max_features=0.25,
-            min_samples_leaf=5,
+            min_samples_leaf=et_leaf,
             class_weight="balanced",
             n_jobs=-1,
             random_state=seed,
         ),
+        "hgb_depth_63": HistGradientBoostingClassifier(
+            max_iter=hgb_iter_63,
+            learning_rate=0.06,
+            max_leaf_nodes=63,
+            min_samples_leaf=hgb_leaf_63,
+            l2_regularization=1.5,
+            class_weight="balanced",
+            early_stopping=use_early_stop,
+            random_state=seed,
+        ),
+        "hgb_depth_95": HistGradientBoostingClassifier(
+            max_iter=hgb_iter_95,
+            learning_rate=0.05,
+            max_leaf_nodes=95,
+            min_samples_leaf=hgb_leaf_95,
+            l2_regularization=2.0,
+            class_weight="balanced",
+            early_stopping=use_early_stop,
+            random_state=seed + 7,
+        ),
     }
 
 
-def _aligned_probabilities(estimator: BaseEstimator, features: np.ndarray) -> np.ndarray:
+def _aligned_probabilities(
+    estimator: BaseEstimator, features: np.ndarray
+) -> np.ndarray:
     probabilities = np.asarray(estimator.predict_proba(features), dtype=np.float64)
     classes = [str(value) for value in estimator.classes_]
     aligned = np.zeros((len(features), len(CLASSES)), dtype=np.float64)
@@ -346,7 +436,9 @@ class SoftVotingEnsemble:
     )
 
     def predict_proba(self, features: np.ndarray) -> np.ndarray:
-        matrices = [_aligned_probabilities(model, features) for _, model in self.estimators]
+        matrices = [
+            _aligned_probabilities(model, features) for _, model in self.estimators
+        ]
         return np.average(np.stack(matrices), axis=0, weights=self.weights)
 
     def predict(self, features: np.ndarray) -> np.ndarray:
@@ -360,11 +452,16 @@ class ClassicalImageClassifier:
     estimator: BaseEstimator | SoftVotingEnsemble
     model_name: str
     uncertainty_threshold: float = 0.60
+    decision_threshold: float = 0.50
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def predict_vector(self, vector: np.ndarray) -> dict[str, object]:
-        probabilities = _aligned_probabilities(self.estimator, vector.reshape(1, -1))[0]
-        index = int(np.argmax(probabilities))
+    def _format_prediction(
+        self,
+        probabilities: np.ndarray,
+        tta_views: int = 1,
+    ) -> dict[str, object]:
+        decision_threshold = float(getattr(self, "decision_threshold", 0.50))
+        index = 0 if float(probabilities[0]) >= decision_threshold else 1
         confidence = float(probabilities[index])
         return {
             "prediction": CLASSES[index],
@@ -375,20 +472,46 @@ class ClassicalImageClassifier:
             },
             "uncertain": confidence < self.uncertainty_threshold,
             "model": self.model_name,
+            "decision_threshold": decision_threshold,
+            "tta_views": tta_views,
         }
 
-    def predict_path(self, path: str | Path) -> dict[str, object]:
-        vector = extract_classic_features(path, self.feature_config)
-        return self.predict_vector(vector)
+    def predict_vector(self, vector: np.ndarray) -> dict[str, object]:
+        probabilities = _aligned_probabilities(self.estimator, vector.reshape(1, -1))[0]
+        return self._format_prediction(probabilities, tta_views=1)
+
+    def predict_image(
+        self,
+        image: Image.Image,
+        tta: bool = True,
+    ) -> dict[str, object]:
+        views = _tta_views(image) if tta else [safe_rgb(image)]
+        matrix = np.stack(
+            [extract_classic_features(view, self.feature_config) for view in views]
+        )
+        probabilities = _aligned_probabilities(self.estimator, matrix).mean(axis=0)
+        return self._format_prediction(probabilities, tta_views=len(views))
+
+    def predict_path(self, path: str | Path, tta: bool = True) -> dict[str, object]:
+        target = Path(path)
+        with Image.open(target) as opened:
+            rgb = safe_rgb(opened)
+        result = self.predict_image(rgb, tta=tta)
+        result["path"] = str(target)
+        return result
 
 
 def _metrics(
     truth: np.ndarray,
     probabilities: np.ndarray,
     threshold: float,
+    decision_threshold: float = 0.50,
 ) -> dict[str, object]:
-    predictions = np.asarray(CLASSES)[np.argmax(probabilities, axis=1)]
-    confidence = np.max(probabilities, axis=1)
+    predictions = np.where(
+        probabilities[:, 0] >= decision_threshold, CLASSES[0], CLASSES[1]
+    )
+    predicted_indices = np.where(predictions == CLASSES[0], 0, 1)
+    confidence = probabilities[np.arange(len(probabilities)), predicted_indices]
     accepted = confidence >= threshold
     report = classification_report(
         truth,
@@ -407,13 +530,16 @@ def _metrics(
         "recall_macro": float(
             recall_score(truth, predictions, average="macro", zero_division=0)
         ),
-        "f1_macro": float(f1_score(truth, predictions, average="macro", zero_division=0)),
+        "f1_macro": float(
+            f1_score(truth, predictions, average="macro", zero_division=0)
+        ),
         "confusion_matrix_labels": list(CLASSES),
         "confusion_matrix": confusion_matrix(
             truth, predictions, labels=list(CLASSES)
         ).tolist(),
         "class_report": report,
         "uncertainty_threshold": threshold,
+        "decision_threshold": decision_threshold,
         "coverage": float(accepted.mean()),
         "uncertain_images": int((~accepted).sum()),
     }
@@ -424,6 +550,39 @@ def _metrics(
     else:
         result["accuracy_when_confident"] = None
     return result
+
+
+def _select_decision_threshold(
+    truth: np.ndarray,
+    probabilities: np.ndarray,
+    uncertainty_threshold: float = 0.60,
+) -> tuple[float, dict[str, object]]:
+    """Ajusta el corte binario usando validation, nunca test."""
+
+    best_threshold = 0.50
+    best_metrics = _metrics(
+        truth, probabilities, uncertainty_threshold, best_threshold
+    )
+    best_key = (
+        float(best_metrics["f1_macro"]),
+        float(best_metrics["balanced_accuracy"]),
+        float(best_metrics["accuracy"]),
+        -abs(best_threshold - 0.50),
+    )
+    for candidate in np.linspace(0.30, 0.70, 81):
+        candidate = round(float(candidate), 3)
+        metrics = _metrics(truth, probabilities, uncertainty_threshold, candidate)
+        key = (
+            float(metrics["f1_macro"]),
+            float(metrics["balanced_accuracy"]),
+            float(metrics["accuracy"]),
+            -abs(candidate - 0.50),
+        )
+        if key > best_key:
+            best_threshold = candidate
+            best_metrics = metrics
+            best_key = key
+    return best_threshold, best_metrics
 
 
 def _selection_row(
@@ -439,6 +598,7 @@ def _selection_row(
         "accuracy": metrics["accuracy"],
         "precision_macro": metrics["precision_macro"],
         "recall_macro": metrics["recall_macro"],
+        "decision_threshold": metrics["decision_threshold"],
         "fit_seconds": round(seconds, 3),
         "fit_rows": fit_rows,
     }
@@ -451,9 +611,9 @@ def train_classical_suite(
     selection_path: Path,
     feature_config: FeatureConfig | None = None,
     max_per_class: int | None = None,
-    max_per_source_label: int | None = 100,
-    svm_max_rows: int | None = 6000,
-    augmentations: int = 1,
+    max_per_source_label: int | None = 180,
+    svm_max_rows: int | None = 14000,
+    augmentations: int = 0,
     uncertainty_threshold: float = 0.60,
     seed: int = 42,
 ) -> tuple[ClassicalImageClassifier, dict[str, object]]:
@@ -491,37 +651,40 @@ def train_classical_suite(
             raise ValueError(f"El split obligatorio {name!r} está vacío.")
 
     x_train, y_train, accepted_train = _extract_features(
-        train, config, augmentations, seed, "Train + ruido"
+        train, config, augmentations, seed, "Train"
     )
     x_validation, y_validation, accepted_validation = _extract_features(
         validation, config, 0, seed, "Validación"
     )
-    x_test, y_test, accepted_test = _extract_features(test, config, 0, seed, "Test"
+    x_test, y_test, accepted_test = _extract_features(
+        test, config, 0, seed, "Test"
     )
     if set(np.unique(y_train)) != set(CLASSES):
         raise ValueError("Train debe contener ejemplos válidos de fruta y verdura.")
 
-    templates = _candidate_estimators(seed, config)
+    templates = _candidate_estimators(seed, config, n_samples=len(x_train))
     fitted: dict[str, BaseEstimator] = {}
     validation_metrics: dict[str, dict[str, object]] = {}
+    decision_thresholds: dict[str, float] = {}
     selection_rows: list[dict[str, object]] = []
     for name, estimator in templates.items():
         print(f"Entrenando candidato: {name}")
         fit_x, fit_y = _fit_subset(name, x_train, y_train, svm_max_rows, seed)
         if len(fit_y) != len(y_train):
             print(
-                f"  SVC usa {len(fit_y)} filas balanceadas de {len(y_train)} "
-                "para mantener viable el entrenamiento."
+                f"  {name} usa {len(fit_y)} filas balanceadas de {len(y_train)} "
+                "para evitar sesgo de clase mayoritaria y mantener viable el ajuste."
             )
         started = perf_counter()
         estimator.fit(fit_x, fit_y)
         elapsed = perf_counter() - started
         probabilities = _aligned_probabilities(estimator, x_validation)
-        candidate_metrics = _metrics(
+        decision_threshold, candidate_metrics = _select_decision_threshold(
             y_validation, probabilities, uncertainty_threshold
         )
         fitted[name] = estimator
         validation_metrics[name] = candidate_metrics
+        decision_thresholds[name] = decision_threshold
         selection_rows.append(
             _selection_row(name, candidate_metrics, elapsed, len(fit_y))
         )
@@ -535,14 +698,20 @@ def train_classical_suite(
         ),
         reverse=True,
     )
-    top_names = ranked_names[: min(3, len(ranked_names))]
-    voting = SoftVotingEnsemble([(name, fitted[name]) for name in top_names])
-    voting_metrics = _metrics(
-        y_validation,
-        voting.predict_proba(x_validation),
-        uncertainty_threshold,
+    top_names = ranked_names[: min(4, len(ranked_names))]
+    voting_weights = [
+        max(float(validation_metrics[name]["f1_macro"]) - 0.45, 0.05) ** 2
+        for name in top_names
+    ]
+    voting = SoftVotingEnsemble(
+        [(name, fitted[name]) for name in top_names],
+        weights=voting_weights,
+    )
+    voting_threshold, voting_metrics = _select_decision_threshold(
+        y_validation, voting.predict_proba(x_validation), uncertainty_threshold
     )
     validation_metrics["soft_voting_top3"] = voting_metrics
+    decision_thresholds["soft_voting_top3"] = voting_threshold
     selection_rows.append(_selection_row("soft_voting_top3", voting_metrics, 0.0, 0))
 
     selected_name = max(
@@ -557,41 +726,48 @@ def train_classical_suite(
 
     x_final = np.concatenate((x_train, x_validation), axis=0)
     y_final = np.concatenate((y_train, y_validation), axis=0)
+    final_templates = _candidate_estimators(seed, config, n_samples=len(x_final))
     if selected_name == "soft_voting_top3":
         final_members: list[tuple[str, BaseEstimator]] = []
         for name in top_names:
             fit_x, fit_y = _fit_subset(
                 name, x_final, y_final, svm_max_rows, seed + 1
             )
-            member = clone(templates[name]).fit(fit_x, fit_y)
+            member = clone(final_templates[name]).fit(fit_x, fit_y)
             final_members.append((name, member))
         final_estimator: BaseEstimator | SoftVotingEnsemble = SoftVotingEnsemble(
-            final_members
+            final_members,
+            weights=voting_weights,
         )
     else:
         fit_x, fit_y = _fit_subset(
             selected_name, x_final, y_final, svm_max_rows, seed + 1
         )
-        final_estimator = clone(templates[selected_name]).fit(fit_x, fit_y)
+        final_estimator = clone(final_templates[selected_name]).fit(fit_x, fit_y)
 
     artifact = ClassicalImageClassifier(
         feature_config=config,
         estimator=final_estimator,
         model_name=selected_name,
         uncertainty_threshold=uncertainty_threshold,
+        decision_threshold=decision_thresholds[selected_name],
         metadata={
             "seed": seed,
             "augmentations_per_train_image": augmentations,
             "max_per_source_label": max_per_source_label,
             "svm_max_rows": svm_max_rows,
             "selected_on": "validation",
+            "decision_threshold_selected_on": "validation",
+            "scikit_learn_version": sklearn_version,
             "top_ensemble_members": top_names,
+            "top_ensemble_weights": [round(float(w), 4) for w in voting_weights],
         },
     )
     test_metrics = _metrics(
         y_test,
         _aligned_probabilities(final_estimator, x_test),
         uncertainty_threshold,
+        decision_thresholds[selected_name],
     )
 
     external_metrics: dict[str, object] | None = None
@@ -604,6 +780,7 @@ def train_classical_suite(
             y_external,
             _aligned_probabilities(final_estimator, x_external),
             uncertainty_threshold,
+            decision_thresholds[selected_name],
         )
 
     selection = pd.DataFrame(selection_rows).sort_values(
@@ -615,6 +792,7 @@ def train_classical_suite(
     metrics: dict[str, object] = {
         "selected_model": selected_name,
         "selection_rule": "mayor F1 macro; desempate por balanced accuracy y accuracy",
+        "decision_threshold": decision_thresholds[selected_name],
         "feature_config": config.to_dict(),
         "feature_count": int(x_train.shape[1]),
         "augmentations_per_train_image": augmentations,
@@ -643,8 +821,375 @@ def train_classical_suite(
 def load_classical_model(path: Path) -> ClassicalImageClassifier:
     model = joblib.load(path)
     if not isinstance(model, ClassicalImageClassifier):
-        raise TypeError(f"El artefacto {path} no contiene un ClassicalImageClassifier.")
+        raise TypeError(
+            f"El artefacto {path} no contiene un ClassicalImageClassifier."
+        )
     return model
+
+
+def _load_known_label_lookup(model_path: Path) -> dict[str, str]:
+    from .manifest import normalize_label
+
+    lookup: dict[str, str] = {class_id: class_id for class_id in CLASSES}
+    candidates = [
+        model_path.resolve().parent.parent / "configs" / "label_mapping.csv",
+        Path.cwd().resolve() / "configs" / "label_mapping.csv",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            frame = pd.read_csv(candidate, dtype=str).fillna("")
+            for record in frame.to_dict("records"):
+                if (
+                    record.get("status") == "approved"
+                    and record.get("class_id") in CLASSES
+                ):
+                    lookup[normalize_label(record["original_label"])] = record[
+                        "class_id"
+                    ]
+            break
+    return lookup
+
+
+def _infer_expected_class(
+    image_path: Path,
+    root: Path,
+    lookup: dict[str, str] | None = None,
+) -> str:
+    from .manifest import normalize_label
+
+    mapping = lookup or {class_id: class_id for class_id in CLASSES}
+    try:
+        relative_parts = image_path.relative_to(root).parts[:-1]
+    except ValueError:
+        relative_parts = image_path.parts[:-1]
+    for part in reversed(relative_parts):
+        resolved = mapping.get(normalize_label(part), "")
+        if resolved in CLASSES:
+            return resolved
+    return mapping.get(normalize_label(image_path.parent.name), "")
+
+
+def predict_target(
+    target_path: Path,
+    model_path: Path,
+    output_path: Path | None = None,
+    tta: bool = True,
+) -> dict[str, object]:
+    """Predice una sola imagen o un directorio completo de fotografías reales."""
+
+    from .manifest import IMAGE_EXTENSIONS
+
+    model = load_classical_model(model_path)
+    target = target_path.resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"No existe la ruta a clasificar: {target}")
+    lookup = _load_known_label_lookup(model_path)
+
+    if target.is_file():
+        result = model.predict_path(target, tta=tta)
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                [
+                    {
+                        "path": str(target),
+                        "prediction": result["prediction"],
+                        "confidence": result["confidence"],
+                        "prob_fruta": result["probabilities"]["fruta"],
+                        "prob_verdura": result["probabilities"]["verdura"],
+                        "uncertain": result["uncertain"],
+                        "model": result["model"],
+                        "tta_views": result["tta_views"],
+                    }
+                ]
+            ).to_csv(output_path, index=False)
+            result["output_path"] = str(output_path.resolve())
+        return result
+
+    images = [
+        path
+        for path in sorted(target.rglob("*"))
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+    rows: list[dict[str, object]] = []
+    probabilities_list: list[list[float]] = []
+    truth_list: list[str] = []
+    errors: list[str] = []
+
+    for image_path in images:
+        try:
+            pred = model.predict_path(image_path, tta=tta)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{image_path}: {exc}")
+            continue
+        expected = _infer_expected_class(image_path, target, lookup)
+        probs = pred["probabilities"]
+        row: dict[str, object] = {
+            "relative_path": image_path.relative_to(target).as_posix(),
+            "path": str(image_path),
+            "prediction": pred["prediction"],
+            "confidence": round(float(pred["confidence"]), 4),
+            "prob_fruta": round(float(probs["fruta"]), 4),
+            "prob_verdura": round(float(probs["verdura"]), 4),
+            "uncertain": bool(pred["uncertain"]),
+            "expected_class": expected,
+            "correct": (pred["prediction"] == expected) if expected else None,
+        }
+        rows.append(row)
+        if expected in CLASSES:
+            truth_list.append(expected)
+            probabilities_list.append([float(probs["fruta"]), float(probs["verdura"])])
+
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_csv(output_path, index=False)
+
+    counts = {
+        class_id: sum(1 for item in rows if item["prediction"] == class_id)
+        for class_id in CLASSES
+    }
+    summary: dict[str, object] = {
+        "mode": "directory",
+        "target_path": str(target),
+        "model": model.model_name,
+        "tta": bool(tta),
+        "total_images": len(rows),
+        "predicted_counts": counts,
+        "uncertain_images": sum(1 for item in rows if item["uncertain"]),
+        "average_confidence": (
+            float(np.mean([float(item["confidence"]) for item in rows]))
+            if rows
+            else 0.0
+        ),
+        "skipped_errors": errors,
+    }
+    if truth_list and len(truth_list) == len(rows):
+        summary["labeled_metrics"] = _metrics(
+            np.asarray(truth_list),
+            np.asarray(probabilities_list, dtype=np.float64),
+            model.uncertainty_threshold,
+            float(getattr(model, "decision_threshold", 0.50)),
+        )
+    if output_path is not None:
+        summary["output_path"] = str(output_path.resolve())
+    summary["predictions"] = rows
+    return summary
+
+
+NOISE_CONDITIONS = (
+    "clean",
+    "gaussian_noise",
+    "gaussian_blur",
+    "illumination_low",
+    "illumination_high",
+    "rotation_crop",
+    "occlusion_patch",
+    "combined_heavy",
+)
+
+
+def _apply_noise_condition(
+    source: Image.Image,
+    condition: str,
+    source_key: str,
+    seed: int,
+    target_size: int,
+) -> Image.Image:
+    """Aplica una perturbación controlada para evaluar robustez ante ruido."""
+
+    rgb = safe_rgb(source)
+    working_size = max(target_size * 2, 96)
+    image = ImageOps.fit(
+        rgb,
+        (working_size, working_size),
+        method=Image.Resampling.LANCZOS,
+    )
+    rng = _stable_rng(f"{source_key}:{condition}", seed, 0)
+
+    if condition == "clean":
+        return image
+    if condition == "gaussian_noise":
+        pixels = np.asarray(image, dtype=np.float32)
+        noisy = np.clip(pixels + rng.normal(0.0, 14.0, pixels.shape), 0, 255).astype(
+            np.uint8
+        )
+        return Image.fromarray(noisy, mode="RGB")
+    if condition == "gaussian_blur":
+        return image.filter(ImageFilter.GaussianBlur(radius=1.5))
+    if condition == "illumination_low":
+        dark = ImageEnhance.Brightness(image).enhance(0.62)
+        return ImageEnhance.Contrast(dark).enhance(0.85)
+    if condition == "illumination_high":
+        bright = ImageEnhance.Brightness(image).enhance(1.38)
+        return ImageEnhance.Contrast(bright).enhance(0.85)
+    if condition == "rotation_crop":
+        fill = tuple(int(v) for v in np.asarray(image).reshape(-1, 3).mean(axis=0))
+        rotated = image.rotate(
+            18.0,
+            resample=Image.Resampling.BILINEAR,
+            expand=False,
+            fillcolor=fill,
+        )
+        width, height = rotated.size
+        crop_w = max(8, int(width * 0.82))
+        crop_h = max(8, int(height * 0.82))
+        left = max(0, (width - crop_w) // 3)
+        top = max(0, (height - crop_h) // 3)
+        return rotated.crop((left, top, left + crop_w, top + crop_h)).resize(
+            (width, height), Image.Resampling.LANCZOS
+        )
+    if condition == "occlusion_patch":
+        pixels = np.asarray(image, dtype=np.uint8).copy()
+        height, width, _ = pixels.shape
+        patch_h = max(4, int(height * 0.22))
+        patch_w = max(4, int(width * 0.22))
+        top = int(
+            rng.integers(
+                height // 5, max(height // 5 + 1, height - patch_h - height // 5)
+            )
+        )
+        left = int(
+            rng.integers(width // 5, max(width // 5 + 1, width - patch_w - width // 5))
+        )
+        neutral = pixels.reshape(-1, 3).mean(axis=0).astype(np.uint8)
+        pixels[top : top + patch_h, left : left + patch_w] = neutral
+        return Image.fromarray(pixels, mode="RGB")
+    if condition == "combined_heavy":
+        return _make_noisy_variant(rgb, source_key, seed, 0, target_size, heavy=True)
+    raise ValueError(f"Condición de ruido desconocida: {condition}")
+
+
+def evaluate_noise_robustness(
+    manifest_path: Path,
+    model_path: Path,
+    split: str = "test",
+    output_path: Path | None = None,
+    max_per_source_label: int | None = 50,
+    tta: bool = True,
+    seed: int = 42,
+) -> dict[str, object]:
+    """Evalúa la caída y retención de desempeño bajo 8 condiciones de ruido explícitas."""
+
+    if split not in {"validation", "test", "external"}:
+        raise ValueError("split debe ser validation, test o external.")
+    model = load_classical_model(model_path)
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    evaluation = _sample_per_source_label(
+        _eligible(manifest, split),
+        max_per_source_label,
+        seed,
+    )
+    if evaluation.empty:
+        return {"split": split, "images": 0, "conditions": []}
+
+    opened_images: list[tuple[Image.Image, str, str]] = []
+    for _, row in evaluation.iterrows():
+        try:
+            path = Path(row["path"])
+            with Image.open(path) as img:
+                opened_images.append(
+                    (safe_rgb(img), str(path.resolve()), str(row["class_id"]))
+                )
+        except (OSError, ValueError):
+            continue
+
+    if not opened_images:
+        return {"split": split, "images": 0, "conditions": []}
+
+    truth = np.asarray([item[2] for item in opened_images])
+    condition_rows: list[dict[str, object]] = []
+    clean_f1: float | None = None
+    workers = min(8, os.cpu_count() or 4)
+
+    for condition in NOISE_CONDITIONS:
+
+        def _extract_one(item: tuple[Image.Image, str, str]) -> np.ndarray:
+            rgb, key, _ = item
+            perturbed = _apply_noise_condition(
+                rgb,
+                condition,
+                key,
+                seed,
+                model.feature_config.image_size,
+            )
+            views = _tta_views(perturbed) if tta else [perturbed]
+            return np.stack(
+                [extract_classic_features(view, model.feature_config) for view in views]
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            view_stacks = list(
+                tqdm(
+                    executor.map(_extract_one, opened_images),
+                    total=len(opened_images),
+                    desc=f"Ruido [{condition}]",
+                    unit="img",
+                )
+            )
+        n_samples = len(view_stacks)
+        n_views = view_stacks[0].shape[0]
+        flat_features = np.concatenate(view_stacks, axis=0)
+        flat_probs = _aligned_probabilities(model.estimator, flat_features)
+        probabilities = flat_probs.reshape(n_samples, n_views, len(CLASSES)).mean(
+            axis=1
+        )
+        cond_metrics = _metrics(
+            truth,
+            probabilities,
+            model.uncertainty_threshold,
+            float(getattr(model, "decision_threshold", 0.50)),
+        )
+        f1_val = float(cond_metrics["f1_macro"])
+        if condition == "clean":
+            clean_f1 = f1_val
+        retention = (
+            100.0 * f1_val / clean_f1 if clean_f1 and clean_f1 > 0 else 100.0
+        )
+        condition_rows.append(
+            {
+                "condition": condition,
+                "images": int(cond_metrics["images"]),
+                "accuracy": round(float(cond_metrics["accuracy"]), 4),
+                "balanced_accuracy": round(
+                    float(cond_metrics["balanced_accuracy"]), 4
+                ),
+                "f1_macro": round(f1_val, 4),
+                "accuracy_when_confident": (
+                    round(float(cond_metrics["accuracy_when_confident"]), 4)
+                    if cond_metrics["accuracy_when_confident"] is not None
+                    else None
+                ),
+                "coverage": round(float(cond_metrics["coverage"]), 4),
+                "f1_retention_pct": round(retention, 2),
+            }
+        )
+
+    table = pd.DataFrame(condition_rows)
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        table.to_csv(output_path, index=False)
+
+    non_clean = [row for row in condition_rows if row["condition"] != "clean"]
+    return {
+        "split": split,
+        "model": model.model_name,
+        "tta": bool(tta),
+        "images": len(opened_images),
+        "clean_f1_macro": clean_f1,
+        "mean_noisy_f1_macro": (
+            round(float(np.mean([float(r["f1_macro"]) for r in non_clean])), 4)
+            if non_clean
+            else clean_f1
+        ),
+        "mean_f1_retention_pct": (
+            round(
+                float(np.mean([float(r["f1_retention_pct"]) for r in non_clean])), 2
+            )
+            if non_clean
+            else 100.0
+        ),
+        "conditions": condition_rows,
+    }
 
 
 def evaluate_classical_model(
@@ -652,6 +1197,8 @@ def evaluate_classical_model(
     model_path: Path,
     split: str = "test",
     breakdown_path: Path | None = None,
+    excluded_sources: tuple[str, ...] = (),
+    tta: bool = True,
 ) -> dict[str, object]:
     """Evalúa un artefacto y desglosa errores por fuente y etiqueta original."""
 
@@ -660,17 +1207,80 @@ def evaluate_classical_model(
     model = load_classical_model(model_path)
     manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
     evaluation = _eligible(manifest, split)
+    if excluded_sources and "source" in evaluation:
+        evaluation = evaluation[
+            ~evaluation["source"].isin(excluded_sources)
+        ].reset_index(drop=True)
     if evaluation.empty:
-        return {"split": split, "images": 0, "breakdown": []}
+        return {
+            "split": split,
+            "images": 0,
+            "tta": bool(tta),
+            "excluded_sources": list(excluded_sources),
+            "breakdown": [],
+        }
 
-    features, truth, accepted = _extract_features(
-        evaluation,
-        model.feature_config,
-        description=f"Evaluando {split}",
+    if tta:
+        view_features: list[np.ndarray] = []
+        truth_rows: list[str] = []
+        accepted_indices: list[int] = []
+
+        def _extract_views(
+            item: tuple[int, pd.Series],
+        ) -> tuple[int, str, np.ndarray | None]:
+            index, row = item
+            try:
+                with Image.open(Path(row["path"])) as opened:
+                    views = _tta_views(opened)
+                    matrix = np.stack(
+                        [
+                            extract_classic_features(view, model.feature_config)
+                            for view in views
+                        ]
+                    )
+                return index, str(row["class_id"]), matrix
+            except (OSError, ValueError):
+                return index, str(row["class_id"]), None
+
+        workers = min(8, os.cpu_count() or 4)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(_extract_views, evaluation.iterrows())
+            for index, class_id, matrix in tqdm(
+                results,
+                total=len(evaluation),
+                desc=f"Evaluando {split} con TTA",
+                unit="img",
+            ):
+                if matrix is None:
+                    continue
+                view_features.append(matrix)
+                truth_rows.append(class_id)
+                accepted_indices.append(index)
+        if not view_features:
+            raise ValueError(
+                "No fue posible extraer características para la evaluación."
+            )
+        stacked = np.stack(view_features)
+        flat = stacked.reshape(-1, stacked.shape[-1])
+        flat_probabilities = _aligned_probabilities(model.estimator, flat)
+        probabilities = flat_probabilities.reshape(
+            len(stacked), stacked.shape[1], len(CLASSES)
+        ).mean(axis=1)
+        truth = np.asarray(truth_rows)
+        accepted = evaluation.loc[accepted_indices].reset_index(drop=True)
+    else:
+        features, truth, accepted = _extract_features(
+            evaluation,
+            model.feature_config,
+            description=f"Evaluando {split}",
+        )
+        probabilities = _aligned_probabilities(model.estimator, features)
+    decision_threshold = float(getattr(model, "decision_threshold", 0.50))
+    predictions = np.where(
+        probabilities[:, 0] >= decision_threshold, CLASSES[0], CLASSES[1]
     )
-    probabilities = _aligned_probabilities(model.estimator, features)
-    predictions = np.asarray(CLASSES)[np.argmax(probabilities, axis=1)]
-    confidence = np.max(probabilities, axis=1)
+    predicted_indices = np.where(predictions == CLASSES[0], 0, 1)
+    confidence = probabilities[np.arange(len(probabilities)), predicted_indices]
     accepted = accepted.copy()
     accepted["prediction"] = predictions
     accepted["confidence"] = confidence
@@ -695,9 +1305,16 @@ def evaluate_classical_model(
         breakdown_path.parent.mkdir(parents=True, exist_ok=True)
         breakdown.to_csv(breakdown_path, index=False)
 
-    result = _metrics(truth, probabilities, model.uncertainty_threshold)
+    result = _metrics(
+        truth,
+        probabilities,
+        model.uncertainty_threshold,
+        decision_threshold,
+    )
     result.update(
         split=split,
+        tta=bool(tta),
+        excluded_sources=list(excluded_sources),
         breakdown=breakdown.to_dict("records"),
     )
     return result

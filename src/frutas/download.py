@@ -17,6 +17,82 @@ def _dataset_entry(paths: ProjectPaths, dataset_id: str) -> dict[str, object]:
     raise ValueError(f"Dataset desconocido: '{dataset_id}'.")
 
 
+def _download_git_paths(
+    repo_url: str,
+    revision: str | None,
+    relative_paths: list[str] | None,
+    destination: Path,
+    skip_lfs: bool = False,
+) -> None:
+    """Clona un repositorio Git en un directorio temporal y copia las rutas solicitadas."""
+
+    with TemporaryDirectory(prefix="frutas-git-") as temporary:
+        checkout = Path(temporary) / "repo"
+        environment = os.environ.copy()
+        if skip_lfs:
+            environment["GIT_LFS_SKIP_SMUDGE"] = "1"
+        clone_cmd = ["git", "clone", "--depth", "1"]
+        if relative_paths:
+            clone_cmd.extend(["--filter=blob:none", "--sparse"])
+        clone_cmd.extend([repo_url, str(checkout)])
+        subprocess.run(
+            clone_cmd,
+            check=True,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+        )
+        if relative_paths:
+            subprocess.run(
+                ["git", "-C", str(checkout), "sparse-checkout", "set", *relative_paths],
+                check=True,
+                env=environment,
+                stdout=subprocess.DEVNULL,
+            )
+        if revision:
+            current = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if current != revision:
+                fetch_cmd = ["git", "-C", str(checkout), "fetch", "--depth", "1"]
+                if relative_paths:
+                    fetch_cmd.append("--filter=blob:none")
+                fetch_cmd.extend(["origin", revision])
+                subprocess.run(
+                    fetch_cmd,
+                    check=True,
+                    env=environment,
+                    stdout=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    ["git", "-C", str(checkout), "checkout", "--detach", revision],
+                    check=True,
+                    env=environment,
+                    stdout=subprocess.DEVNULL,
+                )
+
+        paths_to_copy = relative_paths or ["."]
+        for relative in paths_to_copy:
+            source = (checkout / relative).resolve()
+            if not source.exists():
+                raise RuntimeError(
+                    f"La ruta '{relative}' no existe en {repo_url}."
+                )
+            target = destination if relative in {".", ""} else destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(
+                    source,
+                    target,
+                    dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+            else:
+                shutil.copy2(source, target)
+
+
 def _download_huggingface_git_metadata(
     repo_id: str,
     revision: str | None,
@@ -31,59 +107,14 @@ def _download_huggingface_git_metadata(
     mediante ``snapshot_download``.
     """
 
-    with TemporaryDirectory(prefix="frutas-hf-") as temporary:
-        checkout = Path(temporary) / "repo"
-        environment = os.environ.copy()
-        environment["GIT_LFS_SKIP_SMUDGE"] = "1"
-        repo_url = f"https://huggingface.co/datasets/{repo_id}.git"
-        subprocess.run(
-            ["git", "clone", "--depth", "1", repo_url, str(checkout)],
-            check=True,
-            env=environment,
-            stdout=subprocess.DEVNULL,
-        )
-        if revision:
-            current = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if current != revision:
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(checkout),
-                        "fetch",
-                        "--depth",
-                        "1",
-                        "origin",
-                        revision,
-                    ],
-                    check=True,
-                    env=environment,
-                    stdout=subprocess.DEVNULL,
-                )
-                subprocess.run(
-                    ["git", "-C", str(checkout), "checkout", "--detach", revision],
-                    check=True,
-                    env=environment,
-                    stdout=subprocess.DEVNULL,
-                )
-
-        for relative in relative_paths:
-            source = checkout / relative
-            if not source.exists():
-                raise RuntimeError(
-                    f"La ruta de metadatos '{relative}' no existe en {repo_id}."
-                )
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_dir():
-                shutil.copytree(source, target, dirs_exist_ok=True)
-            else:
-                shutil.copy2(source, target)
+    repo_url = f"https://huggingface.co/datasets/{repo_id}.git"
+    _download_git_paths(
+        repo_url=repo_url,
+        revision=revision,
+        relative_paths=relative_paths,
+        destination=destination,
+        skip_lfs=True,
+    )
 
 
 def download_dataset(
@@ -96,7 +127,8 @@ def download_dataset(
     dataset = _dataset_entry(paths, dataset_id)
     kaggle_handle = str(dataset.get("kaggle_handle", "")).strip()
     huggingface_repo = str(dataset.get("huggingface_repo", "")).strip()
-    if not kaggle_handle and not huggingface_repo:
+    git_repo = str(dataset.get("git_repo", "")).strip()
+    if not kaggle_handle and not huggingface_repo and not git_repo:
         raise ValueError(
             f"El dataset '{dataset_id}' no tiene una fuente descargable configurada; "
             "debe obtenerse manualmente desde la URL registrada."
@@ -141,7 +173,7 @@ def download_dataset(
             force_download=force,
         )
         source_reference = kaggle_handle
-    else:
+    elif huggingface_repo:
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
@@ -173,6 +205,23 @@ def download_dataset(
         source_reference = (
             f"{huggingface_repo}@{revision}" if revision else huggingface_repo
         )
+    else:
+        revision = str(dataset.get("git_revision", "")).strip() or None
+        include_paths = [
+            str(item) for item in dataset.get("git_include_paths", [])
+        ] or None
+        if force and destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        _download_git_paths(
+            repo_url=git_repo,
+            revision=revision,
+            relative_paths=include_paths,
+            destination=destination,
+            skip_lfs=False,
+        )
+        downloaded = str(destination)
+        source_reference = f"{git_repo}@{revision}" if revision else git_repo
     result = Path(downloaded).resolve()
     if not result.exists():
         raise RuntimeError(

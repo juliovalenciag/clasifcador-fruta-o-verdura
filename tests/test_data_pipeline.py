@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pandas as pd
 from PIL import Image
+import pytest
 import yaml
 
 import frutas.download as download_module
@@ -14,15 +16,37 @@ from frutas.baseline import BinaryBaseline, train_binary_baseline
 from frutas.classic_features import FeatureConfig, extract_classic_features
 from frutas.classical_training import (
     _balanced_sample_indices,
+    _select_decision_threshold,
     evaluate_classical_model,
     load_classical_model,
     train_classical_suite,
 )
 from frutas.dedupe import mark_duplicates
 from frutas.download import download_dataset
+from frutas.feedback import (
+    classify_uploaded_image,
+    decode_uploaded_image,
+    save_training_example,
+)
 from frutas.manifest import build_manifest
 from frutas.lvis import prepare_lvis_dataset
 from frutas.splits import assign_splits
+
+
+def test_decision_threshold_is_selected_only_from_supplied_validation() -> None:
+    truth = pd.Series(["fruta", "fruta", "verdura", "verdura"]).to_numpy()
+    probabilities = pd.DataFrame(
+        {
+            "fruta": [0.48, 0.46, 0.42, 0.35],
+            "verdura": [0.52, 0.54, 0.58, 0.65],
+        }
+    ).to_numpy()
+
+    threshold, metrics = _select_decision_threshold(truth, probabilities)
+
+    assert threshold < 0.50
+    assert metrics["f1_macro"] == 1.0
+    assert metrics["decision_threshold"] == threshold
 
 
 def _row(image_id: str, sha: str, phash: str, class_id: str, role: str = "trainable") -> dict[str, str]:
@@ -318,7 +342,6 @@ def test_huggingface_download_uses_pinned_revision(
     ]
     assert (destination / ".complete").exists()
 
-
 def test_lvis_preparation_crops_yolo_objects(tmp_path: Path) -> None:
     raw = tmp_path / "raw"
     output = tmp_path / "derived"
@@ -349,25 +372,36 @@ def test_classic_features_are_deterministic() -> None:
     first = extract_classic_features(image, config)
     second = extract_classic_features(image, config)
     assert first.ndim == 1
-    assert len(first) == 2068
+    assert len(first) == 1405
+    assert len(first) == config.total_feature_count
     assert first.dtype.name == "float32"
     assert (first == second).all()
 
 
 def test_block_balanced_scaler_equalizes_block_variances() -> None:
     import numpy as np
-    from frutas.classic_features import BlockBalancedScaler, safe_rgb
+    from frutas.classic_features import AdaptivePCA, BlockBalancedScaler, safe_rgb
 
+    cfg = FeatureConfig()
     rng = np.random.default_rng(42)
-    x = rng.normal(size=(64, 2068)).astype(np.float32)
-    scaler = BlockBalancedScaler(color_dim=252, lbp_dim=52).fit(x)
+    x = rng.normal(size=(64, cfg.total_feature_count)).astype(np.float32)
+    scaler = BlockBalancedScaler(
+        color_dim=cfg.color_feature_count,
+        lbp_dim=cfg.lbp_feature_count,
+    ).fit(x)
     z = scaler.transform(x)
-    color_var = float(z[:, :252].var(axis=0).sum())
-    hog_var = float(z[:, 252:2016].var(axis=0).sum())
-    lbp_var = float(z[:, 2016:].var(axis=0).sum())
+    c_end = cfg.color_feature_count
+    h_end = c_end + cfg.hog_feature_count
+    color_var = float(z[:, :c_end].var(axis=0).sum())
+    hog_var = float(z[:, c_end:h_end].var(axis=0).sum())
+    lbp_var = float(z[:, h_end:].var(axis=0).sum())
     assert color_var == __import__("pytest").approx(1.0, rel=1e-4)
     assert hog_var == __import__("pytest").approx(1.0, rel=1e-4)
     assert lbp_var == __import__("pytest").approx(1.0, rel=1e-4)
+
+    pca = AdaptivePCA(max_components=256, random_state=42).fit(z[:12])
+    projected = pca.transform(z[:12])
+    assert projected.shape == (12, 11)
 
     palette_img = Image.new("P", (32, 32), 0)
     palette_img.info["transparency"] = b"\x00"
@@ -506,11 +540,249 @@ def test_classical_suite_selects_without_using_test(tmp_path: Path) -> None:
     restored = load_classical_model(model_path)
     prediction = restored.predict_path(tmp_path / "suite_fruta_7.png")
     assert set(prediction["probabilities"]) == {"fruta", "verdura"}
+    assert prediction["tta_views"] == 4
+    single_view = restored.predict_path(tmp_path / "suite_fruta_7.png", tta=False)
+    assert single_view["tta_views"] == 1
     breakdown_path = tmp_path / "breakdown.csv"
     evaluation = evaluate_classical_model(
-        manifest, model_path, "test", breakdown_path
+        manifest, model_path, "test", breakdown_path, tta=False
     )
     assert evaluation["images"] == 4
     assert breakdown_path.exists()
     assert set(pd.read_csv(breakdown_path)["class_id"]) == {"fruta", "verdura"}
 
+    filtered = evaluate_classical_model(
+        manifest,
+        model_path,
+        "test",
+        tmp_path / "filtered.csv",
+        excluded_sources=("synthetic",),
+        tta=True,
+    )
+    assert filtered["tta"] is True
+    assert filtered["excluded_sources"] == ["synthetic"]
+
+    from frutas.classical_training import (
+        NOISE_CONDITIONS,
+        evaluate_noise_robustness,
+        predict_target,
+    )
+
+    noise_csv = tmp_path / "noise.csv"
+    noise_report = evaluate_noise_robustness(
+        manifest_path=manifest,
+        model_path=model_path,
+        split="test",
+        output_path=noise_csv,
+        max_per_source_label=10,
+        tta=False,
+        seed=11,
+    )
+    assert noise_csv.exists()
+    assert noise_report["images"] == 4
+    assert [row["condition"] for row in noise_report["conditions"]] == list(
+        NOISE_CONDITIONS
+    )
+
+    batch_dir = tmp_path / "real_world_batch"
+    (batch_dir / "fruta").mkdir(parents=True)
+    (batch_dir / "verdura").mkdir(parents=True)
+    Image.new("RGB", (48, 48), (230, 30, 25)).save(batch_dir / "fruta" / "apple.png")
+    Image.new("RGB", (48, 48), (25, 145, 35)).save(
+        batch_dir / "verdura" / "spinach.png"
+    )
+    predictions_csv = tmp_path / "predictions.csv"
+    batch_result = predict_target(
+        target_path=batch_dir,
+        model_path=model_path,
+        output_path=predictions_csv,
+        tta=True,
+    )
+    assert batch_result["mode"] == "directory"
+    assert batch_result["total_images"] == 2
+    assert "labeled_metrics" in batch_result
+    assert predictions_csv.exists()
+    assert len(pd.read_csv(predictions_csv)) == 2
+
+
+def test_git_repo_download_uses_configured_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "configs").mkdir()
+    datasets = {
+        "version": 1,
+        "datasets": [
+            {
+                "id": "grocery_sample",
+                "path": "data/raw/grocery_sample",
+                "git_repo": "https://github.com/example/grocery.git",
+                "git_revision": "deadbeef",
+                "git_include_paths": ["dataset/train", "dataset/test"],
+            }
+        ],
+    }
+    (tmp_path / "configs" / "datasets.yaml").write_text(
+        yaml.safe_dump(datasets), encoding="utf-8"
+    )
+    git_calls = []
+
+    def fake_git_paths(*, repo_url, revision, relative_paths, destination, skip_lfs):
+        git_calls.append((repo_url, revision, relative_paths, destination, skip_lfs))
+        (destination / "dataset" / "train").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(download_module, "_download_git_paths", fake_git_paths)
+    destination = download_dataset(ProjectPaths.from_root(tmp_path), "grocery_sample")
+    assert destination == (tmp_path / "data" / "raw" / "grocery_sample").resolve()
+    assert git_calls == [
+        (
+            "https://github.com/example/grocery.git",
+            "deadbeef",
+            ["dataset/train", "dataset/test"],
+            destination,
+            False,
+        )
+    ]
+    assert (destination / ".complete").exists()
+
+
+def test_eligible_filters_contaminated_lvis_crops() -> None:
+    from frutas.classical_training import _eligible
+
+    frame = pd.DataFrame(
+        [
+            {
+                "source": "lvis_fruits_vegetables",
+                "relative_path": "train/apple/0123456789abcdef0123_box000.jpg",
+                "width": "96",
+                "height": "96",
+                "split": "train",
+                "valid": "True",
+                "mapping_status": "approved",
+                "class_id": "fruta",
+            },
+            {
+                "source": "lvis_fruits_vegetables",
+                "relative_path": "train/banana/fedcba9876543210fedc_box000.jpg",
+                "width": "32",
+                "height": "40",
+                "split": "train",
+                "valid": "True",
+                "mapping_status": "approved",
+                "class_id": "fruta",
+            },
+            {
+                "source": "lvis_fruits_vegetables",
+                "relative_path": "train/tomato/11112222333344445555_box000.jpg",
+                "width": "80",
+                "height": "80",
+                "split": "train",
+                "valid": "True",
+                "mapping_status": "approved",
+                "class_id": "fruta",
+            },
+            {
+                "source": "lvis_fruits_vegetables",
+                "relative_path": "train/lettuce/11112222333344445555_box001.jpg",
+                "width": "85",
+                "height": "85",
+                "split": "train",
+                "valid": "True",
+                "mapping_status": "approved",
+                "class_id": "verdura",
+            },
+            {
+                "source": "grocery_store",
+                "relative_path": "dataset/train/Fruit/Apple/001.jpg",
+                "width": "348",
+                "height": "348",
+                "split": "train",
+                "valid": "True",
+                "mapping_status": "approved",
+                "class_id": "fruta",
+            },
+        ]
+    )
+    filtered = _eligible(frame, "train")
+    assert list(filtered["relative_path"]) == [
+        "train/apple/0123456789abcdef0123_box000.jpg",
+        "dataset/train/Fruit/Apple/001.jpg",
+    ]
+
+
+def _uploaded_png_bytes(color: tuple[int, int, int] = (220, 40, 30)) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (48, 40), color).save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_feedback_decodes_classifies_and_deduplicates(tmp_path: Path) -> None:
+    contents = _uploaded_png_bytes()
+
+    class FakeModel:
+        def predict_image(self, image: Image.Image, tta: bool = True):
+            assert image.mode == "RGB"
+            assert tta is True
+            return {
+                "prediction": "fruta",
+                "confidence": 0.8,
+                "probabilities": {"fruta": 0.8, "verdura": 0.2},
+            }
+
+    decoded = decode_uploaded_image(contents)
+    assert decoded.size == (48, 40)
+    _, prediction = classify_uploaded_image(contents, FakeModel(), tta=True)
+    assert prediction["prediction"] == "fruta"
+
+    first = save_training_example(contents, "fruta", tmp_path / "training")
+    second = save_training_example(contents, "fruta", tmp_path / "training")
+    assert first.created is True
+    assert second.created is False
+    assert first.path == second.path
+    assert first.path.parent.name == "fruta"
+    with Image.open(first.path) as saved:
+        assert saved.mode == "RGB"
+        assert saved.size == (48, 40)
+
+
+def test_feedback_rejects_invalid_files_and_labels(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="imagen válida"):
+        decode_uploaded_image(b"esto no es una imagen")
+    with pytest.raises(ValueError, match="etiqueta"):
+        save_training_example(_uploaded_png_bytes(), "tomate", tmp_path)
+
+
+def test_manifest_fixed_split_keeps_ui_feedback_in_train(tmp_path: Path) -> None:
+    (tmp_path / "configs").mkdir()
+    image_dir = tmp_path / "data" / "raw" / "team_photos_train" / "fruta"
+    image_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (200, 20, 20)).save(image_dir / "ui_sample.jpg")
+    (tmp_path / "configs" / "datasets.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "datasets": [
+                    {
+                        "id": "team_photos_train",
+                        "path": "data/raw/team_photos_train",
+                        "role": "trainable",
+                        "enabled": True,
+                        "fixed_split": "train",
+                        "split_aliases": {},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "configs" / "classes.csv").write_text(
+        "class_id,display_name_es\nfruta,Fruta\nverdura,Verdura\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "configs" / "label_mapping.csv").write_text(
+        "source,original_label,class_id,status,notes\n"
+        "team_photos_train,fruta,fruta,approved,feedback\n",
+        encoding="utf-8",
+    )
+
+    manifest = build_manifest(ProjectPaths.from_root(tmp_path))
+
+    assert manifest.loc[0, "original_split"] == "train"

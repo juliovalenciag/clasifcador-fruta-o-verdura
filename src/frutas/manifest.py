@@ -158,6 +158,11 @@ def build_manifest(paths: ProjectPaths) -> pd.DataFrame:
         if not dataset.get("enabled", True):
             continue
         source = str(dataset["id"])
+        fixed_split = str(dataset.get("fixed_split", "")).strip()
+        if fixed_split and fixed_split not in {"train", "validation", "test"}:
+            raise ValueError(
+                f"fixed_split inválido para {source}: {fixed_split!r}."
+            )
         dataset_root = (paths.root / str(dataset["path"])).resolve()
         if not dataset_root.exists():
             print(f"Aviso: se omite {source}; no existe {dataset_root}")
@@ -186,7 +191,8 @@ def build_manifest(paths: ProjectPaths) -> pd.DataFrame:
                         "normalized_original_label": normalized,
                         "class_id": mapped.get("class_id", ""),
                         "mapping_status": mapped.get("status", "unmapped"),
-                        "original_split": _detect_split(relative, dataset.get("split_aliases", {})),
+                        "original_split": fixed_split
+                        or _detect_split(relative, dataset.get("split_aliases", {})),
                         **metadata,
                     }
                 )

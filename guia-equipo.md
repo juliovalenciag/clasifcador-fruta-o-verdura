@@ -152,6 +152,8 @@ clasificador-frutas-verduras/
 │   └── quarantine/          # imágenes que requieren revisión
 ├── notebooks/
 ├── src/frutas/
+│   ├── app.py              # interfaz web Streamlit
+│   └── feedback.py         # validación y guardado supervisado
 ├── tests/
 └── artifacts/               # modelos y métricas locales
 ```
@@ -165,7 +167,9 @@ Las fuentes conocidas están registradas en `configs/datasets.yaml`:
 - `kritikseth36`: Fruit and Vegetable Image Recognition (36 etiquetas originales, activo).
 - `fruits_youssef`: Fruit and Vegetables Classification (50 categorías, versión 5, activo).
 - `lvis_fruits_vegetables`: LVIS Fruits And Vegetables (61 etiquetas canónicas de detección YOLO convertidas a recortes en `data/derived/`, activo).
-- `fruits360`: Fruits-360 (inactivo por fondo blanco controlado).
+- `grocery_store`: Grocery Store Dataset de Klasson et al. (`5,421` fotografías reales de teléfono en supermercados, 81 clases finas; 49 clases botánicas aprobadas y 32 clases de empaquetados/hongos rechazadas, activo).
+- `vegetable_ahmed`: Vegetable Image Dataset de Ahmed et al. (`21,000` imágenes en 15 categorías: 6 verduras botánicas y 9 frutos culinarios; activo, descargado y mapeado al 100 % en `configs/label_mapping.csv`).
+- `fruits360`: Fruits-360 (`https://github.com/fruits-360/fruits-360-100x100.git`, commit fijado `c23fa253bb3281960a741f51be86824c17bb2244`, configurado con `git sparse-checkout` para un subconjunto estrictamente balanceado de **44 categorías**: 20 carpetas de `verdura` botánica como `Carrot 1`, `Cauliflower 1`, `Cabbage white 1`, `Onion 2`, `Potato Red 1`, `Ginger Root 1`, `Beetroot 1`, `Kohlrabi 1` y 24 carpetas de `fruta` botánica).
 - `fruits262`: Fruits-262 (inactivo por contener solo frutas).
 - `google_shared`: Fuente compartida por Google (opcional).
 - `team_photos_train` y `team_photos`: Fotografías del equipo (entrenamiento y prueba externa).
@@ -181,7 +185,7 @@ cd clasificador-frutas-verduras
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,notebooks]"
+python -m pip install -e ".[dev,notebooks,app]"
 pytest
 ```
 
@@ -192,7 +196,9 @@ En Windows, la activación normalmente es:
 ```
 
 La instalación se realiza desde `pyproject.toml`; no se deben instalar versiones al
-azar en cada computadora ni mantener listas distintas por integrante.
+azar en cada computadora ni mantener listas distintas por integrante. En particular,
+`scikit-learn==1.9.1` está fijado porque los modelos `joblib` no garantizan compatibilidad
+entre versiones distintas de scikit-learn.
 
 ## 7. Colocación de datasets
 
@@ -201,26 +207,33 @@ Cada dataset conserva su estructura original en la ruta indicada por su entrada 
 
 ```text
 data/raw/kritikseth36/
-data/raw/fruits360/
-data/raw/fruits262/
 data/raw/fruits_youssef/
 data/raw/lvis_fruits_vegetables/
 data/derived/lvis_fruits_vegetables/
+data/raw/grocery_store/
+data/raw/vegetable_ahmed/
+data/raw/fruits360/
+data/raw/fruits262/
 data/raw/google_shared/
 ```
 
-Los tres datasets públicos activos se descargan y preparan con:
+Los datasets públicos activos se descargan y preparan con:
 
 ```bash
 frutas-data download kritikseth36
 frutas-data download fruits_youssef
 frutas-data download lvis_fruits_vegetables
 frutas-data prepare-lvis
+frutas-data download grocery_store
+frutas-data download vegetable_ahmed
+# Opcional: 6.ª fuente curada con git sparse-checkout (44 clases balanceadas)
+frutas-data download fruits360
 ```
 
-La configuración fija la versión o commit de cada dataset. Por eso todos descargan
-exactamente los mismos archivos y no dependen de cambios futuros en las fuentes. Una
-descarga completa se reutiliza; `--force` solamente se emplea cuando se verificó que
+La configuración fija la versión o commit de cada dataset (`kritikseth36`, `fruits_youssef`,
+`lvis_fruits_vegetables`, `vegetable_ahmed`, `fruits360`) o descarga sus particiones oficiales
+(`grocery_store` vía Git).
+Una descarga completa se reutiliza; `--force` solamente se emplea cuando se verificó que
 la descarga local quedó incompleta y se desea reemplazarla.
 
 Las fotografías del equipo se separan desde el principio:
@@ -377,84 +390,169 @@ El entrenamiento clásico implementado utiliza variaciones reproducibles de:
 Estas variantes se generan en memoria y no duplican archivos dentro de `data/raw/`.
 Los aumentos no sustituyen fotografías reales con fondos variados.
 
-## 12. Extracción de características y baseline clásico
+## 12. Extracción de características y baseline clásico (`v2.0.0`)
 
 Cada imagen se redimensiona a `64x64` y se transforma en un vector numérico
-determinista de **2,068 características** (`float32`):
+determinista de **1,405 características** (`float32`), equilibrado para que ni
+los árboles ni las máquinas de soporte vectorial queden dominados por celdas HOG
+sensibles a traslación:
 
-- **Bloque de Color (252 dimensiones):** histogramas de 16 bins en los espacios **HSV** y **CIE Lab** tanto de la imagen completa como del recorte central (`50%` interior, para aislar el objeto del fondo), más momentos espaciales (media y desviación estándar) en una cuadrícula `2x2` y región central.
-- **Bloque de Forma (1,764 dimensiones):** descriptor **HOG** sobre imagen en escala de grises ecualizada.
-- **Bloque de Textura (52 dimensiones):** histogramas de **LBP uniforme** (`P=24, R=3`) global y central.
+- **Bloque de Color, Cromaticidad, Índices Botánicos y Separación Figura-Fondo (`839` dimensiones — `59.7 %`):**
+  - Histogramas `1D` (`16` bins) en los espacios **HSV** y **CIE Lab** (globales y del recorte central del `50 %`).
+  - Histogramas (`12` bins) de **4 índices botánicos y radiométricos**: Excess Green ($ExG = 2G - R - B$), oposición Rojo-Verde ($R - G$), oposición Amarillo-Azul ($Y - B$) y Croma perceptual CIE $C^* = \sqrt{(a^*)^2 + (b^*)^2}$.
+  - Histogramas de matiz (`Hue`, `16` bins) ponderados por saturación (`S * V`) que anulan el fondo blanco, gris o negro.
+  - Histogramas conjuntos `2D` de cromaticidad `(H, S)` (`8x4 = 32` bins) y `(a*, b*)` (`6x6 = 36` bins) tanto globales como centrales.
+  - Perfiles en **3 anillos radiales concéntricos** (núcleo interior, anillo medio y borde exterior) y vectores explícitos de contraste `interior - exterior` e `interior - medio` sobre los 13 canales.
+  - **Segmentación automática figura-fondo** en espacio `(L*, a*, b*, S, C*)` comparando cada píxel contra el marco perimetral de la imagen, extrayendo media, desviación estándar y contraste del objeto más 6 descriptores geométricos de silueta (fracción de área, centralidad, ancho/alto de caja, razón de aspecto, excentricidad por autovalores y compacidad).
+  - Momentos espaciales en cuadrícula `3x3` sobre canales de color e índices.
+- **Bloque de Forma, Energía de Bordes y HOG Multiescala (`458` dimensiones — `32.6 %`):**
+  - Magnitud de gradiente **Sobel** y energía de alta frecuencia **Laplaciana** en los 3 anillos concéntricos y en una cuadrícula `4x4` (`44` dims), diferenciando cáscaras lisas (frutas como manzana, tomate, pimiento) de cabezas florales y hojas rugosas (brócoli, coliflor, lechuga).
+  - **HOG multiescala agrupado (`414` dims):** a partir de las celdas `8x8` (`7x7x9`), se extraen medias y máximos en `3x3` macro-regiones (`162` dims), las `5x5` celdas centrales del objeto (`225` dims) y el resumen global de orientación invariante a posición (`27` dims).
+- **Bloque de Textura LBP Multiescala (`108` dimensiones — `7.7 %`):**
+  - Histogramas **LBP uniforme** en **3 escalas radiales** (`P=8, R=1` micro-textura = `10` bins; `P=16, R=2` meso-textura = `18` bins; `P=24, R=3` macro-textura = `26` bins) sobre la imagen completa y el recorte central (`54 x 2 = 108` dims).
 
-Los clasificadores lineales y SVM utilizan `BlockBalancedScaler`, que estandariza cada
-columna y pondera cada bloque por el inverso de la raíz cuadrada de su dimensión
-(`1 / sqrt(d_bloque)`), garantizando que color, forma y textura aporten exactamente la
-misma varianza total (`1.0` por bloque).
+Los clasificadores lineales utilizan `BlockBalancedScaler(color_dim=839, lbp_dim=108)` y los modelos SVM RBF añaden `AdaptivePCA(max_components=256)` para proyectar el espacio equilibrado en sus 256 componentes ortogonales de mayor varianza antes del kernel radial.
 
-Para ejecutar el baseline lineal rápido:
+Para ejecutar el baseline lineal rápido (`accuracy = 74.45 %`, `F1 macro = 0.7445` en test equilibrado):
 
 ```bash
 frutas-data train-baseline --image-size 64 --max-per-class 1000
 frutas-data predict-baseline ruta/a/imagen.jpg
 ```
 
-## 13. Selección y ensamble clásico
+## 13. Selección y ensamble clásico (`v2.0.0`)
 
 El entrenamiento final se ejecuta con:
 
 ```bash
 frutas-data train-classic \
   --image-size 64 \
-  --augmentations 1 \
-  --max-per-source-label 100 \
-  --svm-max-rows 6000 \
+  --augmentations 0 \
+  --max-per-source-label 180 \
+  --svm-max-rows 14000 \
   --seed 42
 ```
+
+Además, antes de muestrear, `_eligible` aplica un **filtro automático de calidad sobre `lvis_fruits_vegetables`** usando `crops_manifest.csv`: se conservan únicamente recortes con resolución mínima de `64x64` píxeles procedentes de escenas de clase pura (`scene_classes == 1`) y no saturadas (`scene_boxes <= 8`), eliminando más de `22,000` parches contaminados donde cajas de fruta y verdura se traslapaban en ensaladas o platos mixtos.
 
 El flujo evita escoger un modelo mirando los resultados de prueba:
 
 ```text
-train -> extracción HSV/Lab + HOG + LBP (2,068 vars) -> candidatos clásicos
-validation -> selección por F1 macro
-train + validation -> reentrenamiento del ganador
-test -> evaluación interna una sola vez
+train (19,097 imgs) -> extracción 1,405 vars (v4) -> 8 candidatos clásicos + ensamble
+validation (9,422 imgs) -> selección por F1 macro y calibración de umbral
+train + validation (28,519 imgs) -> reentrenamiento del ganador (soft_voting_top3)
+test (9,293 muestreadas / 13,141 elegibles) -> evaluación interna una sola vez
 external -> evaluación separada, si existen fotografías externas
 ```
 
-Los candidatos son regresión logística (`C=1`, `C=10`), SGD con pérdida logística,
-SVM RBF calibrado (`CalibratedClassifierCV` con `C=10`, `C=30` y `ensemble=False`) y
-Extra Trees regularizados (`min_samples_leaf=5`, con `max_features="sqrt"` y `0.25`).
-También se evalúa un ensamble de votación suave (`soft_voting_top3`) con los tres
-candidatos individuales mejor posicionados.
+Los 8 candidatos individuales son:
+1. `logistic_c1`: Regresión logística (`C=1.0`, `class_weight="balanced"`).
+2. `sgd_log`: SGD con pérdida logística (`alpha=1e-4`, `class_weight="balanced"`).
+3. `svm_rbf_c10`: `BlockBalancedScaler` + `AdaptivePCA(256)` + `CalibratedClassifierCV(SVC(C=10.0, kernel="rbf"))` sobre `14,000` filas balanceadas.
+4. `svm_rbf_c25`: `BlockBalancedScaler` + `AdaptivePCA(256)` + `CalibratedClassifierCV(SVC(C=25.0, kernel="rbf"))` sobre `14,000` filas balanceadas.
+5. `extra_trees_sqrt`: `ExtraTreesClassifier(n_estimators=500, max_features="sqrt", min_samples_leaf=2, class_weight="balanced_subsample")`.
+6. `extra_trees_040`: `ExtraTreesClassifier(n_estimators=500, max_features=0.35, min_samples_leaf=2, class_weight="balanced_subsample")`.
+7. `hgb_depth_63`: **Histogram Gradient Boosting** (`HistGradientBoostingClassifier(max_iter=420, learning_rate=0.06, max_leaf_nodes=63)` con pesos balanceados por muestra).
+8. `hgb_depth_95`: **Histogram Gradient Boosting** (`HistGradientBoostingClassifier(max_iter=480, learning_rate=0.05, max_leaf_nodes=95)` con pesos balanceados por muestra).
 
-Los modelos lineales y Extra Trees aprovechan todas las filas seleccionadas. SVM
-RBF tiene costo aproximadamente cuadrático, por lo que recibe como máximo 6,000
-filas balanceadas y reproducibles.
+Finalmente, `soft_voting_top3` construye un ensamble de votación suave ponderada con los 4 mejores candidatos en validación (`hgb_depth_95`, `hgb_depth_63`, `svm_rbf_c10` y `svm_rbf_c25`), ponderando cada modelo según el cuadrado de su margen de F1 macro sobre `0.72`.
 
-La selección prioriza F1 macro, con balanced accuracy y accuracy como desempates. El
-comando crea:
+La selección prioriza F1 macro, con balanced accuracy y accuracy como desempates. Para
+cada candidato también se busca, **solo en `validation`**, un umbral de decisión para la
+probabilidad de `fruta` entre `0.30` y `0.70` (paso `0.005`). El ganador (`soft_voting_top3`) seleccionó `0.485`. El umbral de incertidumbre (`0.60`) es
+independiente: decide cuándo marcar una salida como dudosa, no qué clase gana. El comando
+crea:
 
 - `artifacts/classical_model.joblib`: modelo y configuración de características.
 - `artifacts/classical_metrics.json`: métricas completas y matriz de confusión.
 - `artifacts/model_selection.csv`: tabla ordenada de candidatos.
 
-Para probar una imagen nueva:
+## 13.1 Guía de uso para pruebas reales e inferencia a prueba de ruido
 
-```bash
-frutas-data predict-classic ruta/a/imagen.jpg
-```
+El clasificador incluye **Test-Time Augmentation (TTA)** por defecto: al predecir una
+imagen real, evalúa `4` vistas deterministas en memoria (original, espejo horizontal,
+recorte central del `86 %` y normalización de contraste `autocontrast`) y promedia sus
+probabilidades.
 
-Para localizar clases originales con bajo desempeño:
+1. **Probar una fotografía individual (celular, cámara o archivo suelto):**
+   ```bash
+   frutas-data predict-classic ruta/a/imagen.jpg
+   ```
+   Si se desea desactivar TTA para comparar una sola vista:
+   ```bash
+   frutas-data predict-classic --no-tta ruta/a/imagen.jpg
+   ```
 
-```bash
-frutas-data evaluate-classic \
-  --split test \
-  --output artifacts/error_analysis_by_label.csv
-```
+2. **Probar una carpeta completa de fotografías por lotes:**
+   ```bash
+   frutas-data predict-classic ruta/a/carpeta_fotos/ --output artifacts/mis_predicciones.csv
+   ```
+   - Si las imágenes están organizadas dentro de subcarpetas `fruta/` y `verdura/` (o en
+     carpetas con nombres de categorías registradas en `configs/label_mapping.csv`, como
+     `Carrots`, `Garlic`, `Tomato`, `Apple`), el comando detecta automáticamente la clase
+     esperada y reporta `accuracy`, `balanced_accuracy`, `f1_macro`,
+     `accuracy_when_confident` y la matriz de confusión del lote.
+
+3. **Localizar categorías originales con menor exactitud en `test` o `external`:**
+   ```bash
+   frutas-data evaluate-classic \
+     --split test \
+     --output artifacts/error_analysis_by_label.csv
+   ```
+
+4. **Ejecutar la prueba de estrés ante 8 condiciones explícitas de ruido:**
+   ```bash
+   frutas-data evaluate-noise \
+     --split test \
+     --max-per-source-label 15 \
+     --output artifacts/noise_robustness.csv
+   ```
+   Evalúa `clean`, `gaussian_noise`, `gaussian_blur`, `illumination_low`,
+   `illumination_high`, `rotation_crop`, `occlusion_patch` y `combined_heavy`,
+   calculando el porcentaje de retención de `F1 macro` respecto a la imagen limpia.
 
 Si la probabilidad mayor no alcanza `0.60`, el resultado incluye
 `"uncertain": true`. Esto permite revisar casos difíciles sin inventar una tercera
 clase, aunque la salida principal siga siendo fruta o verdura.
+
+## 13.2 Interfaz web y recolección supervisada de ejemplos
+
+La interfaz se instala junto con las dependencias opcionales de la aplicación:
+
+```bash
+python -m pip install -e ".[app]"
+frutas-app
+```
+
+El navegador permite:
+
+1. Subir una imagen `JPG`, `PNG`, `WEBP`, `BMP` o `TIFF` de hasta `20 MB`.
+2. Activar o desactivar TTA.
+3. Ver la clase predicha, confianza, probabilidades y estado de incertidumbre.
+4. Confirmar manualmente la etiqueta correcta y guardar la imagen para un
+   reentrenamiento posterior.
+
+El cuarto punto es deliberadamente supervisado. La predicción del modelo **nunca se
+usa como etiqueta automática**. Al confirmar un ejemplo, se normaliza a RGB, se
+deduplica mediante SHA-256 y se guarda en:
+
+```text
+data/raw/team_photos_train/fruta/ui_<hash>.jpg
+data/raw/team_photos_train/verdura/ui_<hash>.jpg
+```
+
+Guardar una imagen no cambia el modelo cargado. Cuando exista un lote suficientemente
+revisado, se incorpora con:
+
+```bash
+frutas-data all
+frutas-data train-classic
+```
+
+`team_photos_train` declara `fixed_split: train`; por lo tanto, ejemplos escogidos a
+partir de errores observados en la interfaz no contaminan validation ni test. Las fotos
+de evaluación final continúan exclusivamente en `data/external/team_photos/` y nunca
+se guardan mediante este formulario.
 
 ## 14. Métricas obligatorias
 
@@ -466,6 +564,7 @@ No se reporta solamente accuracy. El resultado final debe incluir:
 - Recall por clase y macro.
 - F1 por clase y macro.
 - Matriz de confusión.
+- Retención de F1 macro bajo las 8 condiciones de ruido (`artifacts/noise_robustness.csv`).
 - Resultados separados para test interno y test externo.
 
 ## 15. Cuándo está lista la base de datos
@@ -524,13 +623,63 @@ La etapa de datos se considera aprobada cuando:
 - Enriquecimiento del vector de características a **2,068 dimensiones** incorporando histogramas y momentos espaciales **HSV + CIE Lab** (globales y centrales) y **LBP** (global y central).
 - Implementación de `BlockBalancedScaler` para equilibrar la varianza total entre los bloques de color, forma (HOG) y textura (LBP), evitando que HOG domine el 96% de la distancia.
 - Migración de `SVC(probability=True)` a `CalibratedClassifierCV(SVC(...), cv=3, ensemble=False)` y regularización de `ExtraTreesClassifier` (`min_samples_leaf=5`), eliminando advertencias de deprecación en `scikit-learn 1.9+`.
-- Reentrenamiento y evaluación completa sincronizados con el `dataset.csv` multifuente (`167,287` registros), elevando el **Accuracy en test de `63.40%` a `76.37%`** y el **F1 macro de `0.6057` a `0.7127`** (`81.75%` de exactitud en predicciones confiables).
 
-### Próximo hito
+### Versión 1.0.0 — Versión entregable robusta, datasets adicionales, TTA y benchmark de ruido
 
-Agregar y congelar fotografías externas del equipo (`data/external/team_photos/`), volver
-a generar el manifiesto y medir generalización fuera de los datasets públicos sin cambiar
-hiperparámetros mirando esas fotografías.
+- **Nuevos datasets integrados:**
+  - `grocery_store` (`marcusklasson/GroceryStoreDataset`): `5,421` fotografías reales tomadas con cámara de teléfono en supermercados (81 clases finas mapeadas bajo criterio botánico; 49 clases aprobadas con `3,593` fotos y 32 clases de envases/hongos rechazadas).
+  - `vegetable_ahmed` (`misrakahmed/vegetable-image-dataset`): `21,000` imágenes en 15 categorías registradas y mapeadas al 100 % en `configs/label_mapping.csv`.
+- **Soporte de descarga Git reproducible** (`git_repo` y `git_include_paths` en `src/frutas/download.py`).
+- **Muestreo balanceado `50/50` para `ExtraTreesClassifier`** en `_fit_subset`, elevando el recall de `verdura` en `test` de `58.95 %` (`v0.5.0`) / `65.32 %` (`v0.6.0`) a **`74.95 %`** (`v1.0.0`).
+- **Inferencia con Test-Time Augmentation (TTA)** de 4 vistas y soporte de **predicción por lotes sobre directorios completos** en `frutas-data predict-classic` con evaluación automática de carpetas etiquetadas.
+- **Nuevo comando `frutas-data evaluate-noise`** que certifica una **retención media de F1 macro del `98.00 %`** frente a 7 condiciones de ruido adverso (`artifacts/noise_robustness.csv`).
+
+### Versión 1.1.0 — Quinta fuente activa y calibración de la decisión
+
+- Descargado y auditado `vegetable_ahmed` versión 1: `21,000` imágenes, licencia
+  CC BY-SA 4.0 y mapeo botánico completo de sus 15 categorías.
+- Inventario total: `193,708` registros, `193,706` imágenes válidas y cero grupos
+  duplicados cruzando particiones.
+- Agregado un umbral de decisión binario seleccionado únicamente con `validation`;
+  el modelo ganador eligió `0.49` para la probabilidad de `fruta`.
+- Resultado multifuente en `test` muestreado (`7,881` imágenes): accuracy `0.8126`,
+  balanced accuracy `0.8007`, F1 macro `0.7768`, recall `fruta` `0.8261` y recall
+  `verdura` `0.7752`.
+- Ablación sobre las `13,315` imágenes de test pertenecientes a las cuatro fuentes
+  anteriores: accuracy `0.8034` y F1 macro `0.7258`. La balanced accuracy fue `0.7455`,
+  por lo que no se debe ocultar el sesgo residual hacia `fruta` y la evaluación externa
+  balanceada sigue siendo requisito de cierre.
+- Añadida `--exclude-source` a `evaluate-classic` para repetir comparaciones justas sin
+  que las imágenes de la fuente nueva inflen el resultado.
+
+### Versión 2.0.0 — Salto a ~90 % de accuracy, descriptor `v4` (1,405 vars), Gradient Boosting y limpieza LVIS
+
+- **Diagnóstico y solución del techo de `~80 %`:**
+  1. **Limpieza automática de recortes contaminados en `lvis_fruits_vegetables`:** el `59.2 %` de los recortes LVIS eran menores a `64x64` px y el `25.5 %` (`22,182` recortes) provenían de escenas mixtas (`fruta + verdura` simultáneas en ensaladas o platos) con traslape de cajas. `_eligible` ahora filtra recortes LVIS exigiendo resolución mínima `64x64`, escenas de clase pura (`scene_classes == 1`) y máximo `8` objetos por escena (`scene_boxes <= 8`).
+  2. **Reingeniería del descriptor clásico a `1,405` características (`v4`):** se eliminó la inanición de atributos de color/textura en árboles (donde el `85.3 %` de las columnas eran celdas HOG crudas) mediante un descriptor balanceado con `839` variables de color/cromaticidad/índices botánicos/separación figura-fondo (`59.7 %`), `458` de bordes Sobel/Laplaciano y HOG multiescala agrupado (`32.6 %`) y `108` de textura LBP en 3 escalas (`7.7 %`).
+  3. **Incorporación de `HistGradientBoostingClassifier` (`hgb_depth_63`, `hgb_depth_95`) y `AdaptivePCA(256) + SVC(RBF)` (`14,000` filas)** dentro de un ensamble ponderado de los 4 mejores modelos (`soft_voting_top3`).
+  4. **Sexta fuente configurada (`fruits360`):** soporte de `git sparse-checkout` en `src/frutas/download.py` y mapeo de 44 categorías estrictamente balanceadas (`20` verduras botánicas y `24` frutas botánicas) en `configs/datasets.yaml` y `configs/label_mapping.csv`.
+- **Salto verificado en métricas (`test` multifuente `9,293` imgs / `test` elegible completo `13,141` imgs):**
+  - Accuracy en `test` muestreado: **`89.65 %`** (`+8.39 pts` vs `81.26 %`), Balanced Accuracy: **`87.06 %`** (`+6.99 pts`), F1 Macro: **`0.8701`** (`+9.33 pts`), Recall `fruta` / `verdura`: **`92.78 %`** / **`81.34 %`**.
+  - Accuracy en `test` completo con TTA (`13,141` imgs): **`89.13 %`** (`vegetable_ahmed`: **`97.69 %`**, `grocery_store`: **`91.17 %`**, `fruits_youssef`: **`86.97 %`**, `kritikseth36`: **`79.55 %`**, `lvis_fruits_vegetables`: **`77.03 %`**).
+  - Ablación sin `vegetable_ahmed` (`10,976` imgs): Accuracy **`86.63 %`**, Balanced Accuracy **`80.34 %`**, F1 Macro **`0.8045`**.
+
+### Versión 2.1.0 — Interfaz web y feedback supervisado
+
+- Agregada la aplicación local `frutas-app` con carga y vista previa de imágenes,
+  predicción TTA, probabilidades por clase e indicador de incertidumbre.
+- Agregado guardado opcional de ejemplos revisados en `team_photos_train`, con
+  validación de formato, límite de `20 MB`, conversión RGB y deduplicación SHA-256.
+- La fuente de feedback queda fijada exclusivamente a `train`, evitando contaminación
+  de validation y test.
+- Agregadas pruebas de decodificación, clasificación, deduplicación, rechazo de entradas
+  inválidas y asignación forzada a train.
+
+### Próximo hito operativo del equipo
+
+Reunir las fotografías propias tomadas con celular en `data/external/team_photos/fruta/`
+y `data/external/team_photos/verdura/` y ejecutar `frutas-data predict-classic data/external/team_photos`
+o `frutas-data evaluate-classic --split external` para documentar la generalización en campo.
 
 ## 17. Ejecución verificada inicial (solo `kritikseth36`) — 15 de octubre de 2026
 
@@ -554,35 +703,87 @@ de contexto en `data/derived/lvis_fruits_vegetables/` y registra su trazabilidad
 `crops_manifest.csv`. Se rechazan `almond`, `bean curd/tofu`, `chickpea`, `mushroom` y
 `pickle`.
 
-## 20. Ejecución multifuente verificada (`v0.6.0` — 3 datasets activos)
+## 20. Cuarto, quinto y sexto datasets: `grocery_store`, `vegetable_ahmed` y `fruits360`
 
-Con las tres fuentes habilitadas (`kritikseth36`, `fruits_youssef` y
-`lvis_fruits_vegetables`), el inventario y auditoría en `data/interim/data_report.md`
-registran:
+- **`grocery_store` (`marcusklasson/GroceryStoreDataset`):** `5,421` imágenes tomadas con smartphones en supermercados reales a través de 81 clases finas (`Fruit`, `Vegetables`, `Packages`). Las 31 clases de `Packages` (leches, jugos, yogures) y `Brown-Cap-Mushroom` se excluyen (`rejected`), dejando **3,593 fotografías reales aprobadas** en `train` (`1,737`), `validation` (`191`) y `test` (`1,665`).
+- **`vegetable_ahmed` (`misrakahmed/vegetable-image-dataset`, versión 1):** `21,000` imágenes en 15 clases (`Broccoli`, `Cabbage`, `Carrot`, `Cauliflower`, `Potato`, `Radish` como `verdura`; `Bean`, `Bitter_Gourd`, `Bottle_Gourd`, `Brinjal`, `Capsicum`, `Cucumber`, `Papaya`, `Pumpkin`, `Tomato` como `fruta` botánica). Está descargado, auditado y se reproduce con `frutas-data download vegetable_ahmed`.
+- **`fruits360` (`fruits-360/fruits-360-100x100`, commit `c23fa253bb3281960a741f51be86824c17bb2244`):** configurado mediante `git sparse-checkout` para descargar únicamente un subconjunto curado y balanceado de **44 categorías** (`20` de `verdura` botánica y `24` de `fruta` botánica) con `frutas-data download fruits360`.
 
-- **167,287 registros totales** (`167,285` imágenes válidas y `2` corruptas excluidas).
-- **161,431 imágenes aprobadas** (`5,856` rechazadas por categoría fuera de alcance y `141` excluidas por conflicto de etiqueta entre duplicados).
-- **124,710 imágenes en `train`, 24,927 en `validation` y 11,651 en `test`.**
+## 21. Ejecución histórica (`v1.0.0` — 4 datasets activos en disco)
+
+Con las cuatro fuentes habilitadas (`lvis_fruits_vegetables`, `fruits_youssef`,
+`grocery_store` y `kritikseth36`), el inventario y auditoría en
+`data/interim/data_report.md` registran:
+
+- **172,708 registros totales** (`172,706` imágenes válidas y `2` corruptas excluidas).
+- **165,024 imágenes aprobadas** (`7,684` rechazadas por categoría fuera de alcance y `143` excluidas por conflicto de etiqueta entre duplicados).
+- **126,447 imágenes en `train`, 25,118 en `validation` y 13,316 en `test`.**
 - **0 grupos duplicados con fuga entre particiones.**
 
-Al ejecutar `frutas-data train-classic --image-size 64 --augmentations 1 --max-per-source-label 100 --svm-max-rows 6000 --seed 42`, se muestrearon `13,076` imágenes de `train` (`26,152` con aumento de ruido), `7,088` de `validation` y `4,718` de `test`. El modelo ganador seleccionado en validación fue `soft_voting_top3` (`svm_rbf_c10` + `svm_rbf_c30` + `extra_trees_040`, con `F1 macro = 0.7169` en validación).
+Al ejecutar `frutas-data train-classic --image-size 64 --augmentations 1 --max-per-source-label 100 --svm-max-rows 6000 --seed 42`, se muestrearon `14,813` imágenes de `train` (`29,626` con aumento de ruido), `7,279` de `validation` y `6,383` de `test`. El modelo ganador seleccionado en validación fue `extra_trees_040` (`F1 macro = 0.6965`, `Balanced Accuracy = 0.7181` en validación).
 
-El resultado verificado en el conjunto `test` muestreado (`4,718` imágenes) fue:
+Resultados verificados en `test` muestreado (`6,383` imágenes) y en `test` completo (`13,316` imágenes):
 
-| Métrica | Resultado (`v0.6.0`) |
-|---|---:|
-| Accuracy | **0.7637** (`76.37%`) |
-| Balanced accuracy | **0.7281** (`72.81%`) |
-| Precision macro | **0.7039** (`70.39%`) |
-| Recall macro | **0.7281** (`72.81%`) |
-| F1 macro | **0.7127** (`71.27%`) |
-| Cobertura con confianza >= 0.60 | **0.7641** (`76.41%`) |
-| Accuracy entre predicciones confiables | **0.8175** (`81.75%`) |
+| Métrica | `test` muestreado (`6,383` imgs) | `test` completo (`13,316` imgs) |
+|---|---:|---:|
+| Accuracy | **0.7725** (`77.25 %`) | **0.7854** (`78.54 %`) |
+| Balanced accuracy | **0.7645** (`76.45 %`) | **0.7610** (`76.10 %`) |
+| Precision macro | **0.7103** (`71.03 %`) | **0.7038** (`70.38 %`) |
+| Recall macro | **0.7645** (`76.45 %`) | **0.7610** (`76.10 %`) |
+| F1 macro | **0.7235** (`72.35 %`) | **0.7201** (`72.01 %`) |
+| Recall `fruta` / `verdura` | **77.96 %** / **74.95 %** | **80.31 %** / **71.89 %** |
+| Accuracy en predicciones confiables (`>= 0.60`) | **0.8772** (`87.72 %`) | **0.8958** (`89.58 %`) |
 
-Matriz de confusión en `test` con filas reales y columnas predichas en el orden
-`[fruta, verdura]`:
+## 22. Ejecución histórica (`v1.1.0` — 5 datasets activos antes del rediseño `v2.0.0`)
 
-```text
-[[2795,  686],
- [ 429,  808]]
+En `v1.1.0`, tras incorporar `vegetable_ahmed` pero antes de limpiar los recortes contaminados de `LVIS` y antes del descriptor `v4` (`1,405` vars) + `HistGradientBoosting`, el modelo `extra_trees_040` obtuvo en `test` muestreado (`7,881` imgs): Accuracy `0.8126`, Balanced accuracy `0.8007` y F1 macro `0.7768` (`0.8034` accuracy y `0.7258` F1 macro en las fuentes previas sin `vegetable_ahmed`).
+
+## 23. Ejecución actual verificada (`v2.0.0` — Descriptor `v4`, Limpieza LVIS y Ensamble con Gradient Boosting)
+
+Con el comando por defecto:
+
+```bash
+frutas-data train-classic
 ```
+
+Se entrenan los 8 candidatos clásicos sobre `19,097` imágenes de `train`, se evalúan en `9,422` imágenes de `validation` y se reentrena el ensamble ganador (`soft_voting_top3`, umbral `0.485`) sobre las `28,519` imágenes combinadas (`train + validation`).
+
+### Tabla de selección de modelos en `validation` (`9,422` imágenes, `artifacts/model_selection.csv`)
+
+| Modelo | F1 Macro | Balanced Accuracy | Accuracy | Precision Macro | Recall Macro | Umbral |
+|---|---:|---:|---:|---:|---:|---:|
+| **`soft_voting_top3` (Ganador)** | **0.8766** | **0.8727** | **0.8980** | **0.8808** | **0.8727** | `0.485` |
+| `hgb_depth_95` | 0.8708 | 0.8705 | 0.8922 | 0.8711 | 0.8705 | `0.545` |
+| `hgb_depth_63` | 0.8705 | 0.8615 | 0.8946 | 0.8815 | 0.8615 | `0.445` |
+| `svm_rbf_c10` (`PCA-256`) | 0.8509 | 0.8505 | 0.8756 | 0.8513 | 0.8505 | `0.425` |
+| `svm_rbf_c25` (`PCA-256`) | 0.8494 | 0.8419 | 0.8770 | 0.8582 | 0.8419 | `0.375` |
+| `extra_trees_040` | 0.8436 | 0.8318 | 0.8742 | 0.8593 | 0.8318 | `0.540` |
+| `extra_trees_sqrt` | 0.8328 | 0.8331 | 0.8602 | 0.8325 | 0.8331 | `0.575` |
+| `logistic_c1` | 0.7657 | 0.7766 | 0.7971 | 0.7584 | 0.7766 | `0.420` |
+| `sgd_log` | 0.7652 | 0.7779 | 0.7955 | 0.7571 | 0.7779 | `0.425` |
+
+### Resultados en `test` (`9,293` muestreadas, `13,141` completas con TTA y `10,976` sin `vegetable_ahmed`)
+
+| Métrica | `test` muestreado (`9,293` imgs) | `test` completo con TTA (`13,141` imgs) | Ablación sin `vegetable_ahmed` (`10,976` imgs) |
+|---|---:|---:|---:|
+| **Accuracy** | **0.8965** (`89.65 %`) | **0.8913** (`89.13 %`) | **0.8663** (`86.63 %`) |
+| **Balanced accuracy** | **0.8706** (`87.06 %`) | **0.8461** (`84.61 %`) | **0.8034** (`80.34 %`) |
+| **Precision macro** | **0.8695** (`86.95 %`) | **0.8593** (`85.93 %`) | **0.8057** (`80.57 %`) |
+| **Recall macro** | **0.8706** (`87.06 %`) | **0.8461** (`84.61 %`) | **0.8034** (`80.34 %`) |
+| **F1 macro** | **0.8701** (`87.01 %`) | **0.8523** (`85.23 %`) | **0.8045** (`80.45 %`) |
+| **Recall `fruta` / `verdura`** | **92.78 %** / **81.34 %** | **93.65 %** / **75.56 %** | **91.58 %** / **69.10 %** |
+| **Accuracy confiable (`>= 0.60`)** | **0.9197** (`91.97 %`) | **0.9198** (`91.98 %`) | **0.8948** (`89.48 %`) |
+
+### Benchmark de robustez ante ruido (`artifacts/noise_robustness.csv`, `1,677` imágenes de `test` con TTA)
+
+| Condición | Accuracy | Balanced Accuracy | F1 Macro | Exactitud Confiable (`>=0.60`) | Retención de F1 |
+|---|---:|---:|---:|---:|---:|
+| `clean` | **87.00 %** | **82.74 %** | **0.8303** | **90.15 %** | **100.00 %** |
+| `occlusion_patch` | 86.52 % | 80.51 % | 0.8179 | 89.39 % | 98.50 % |
+| `illumination_high` | 85.39 % | 78.42 % | 0.7998 | 88.50 % | 96.32 % |
+| `rotation_crop` | 85.33 % | 81.17 % | 0.8108 | 87.98 % | 97.65 % |
+| `gaussian_noise` | 84.68 % | 76.39 % | 0.7844 | 88.16 % | 94.47 % |
+| `combined_heavy` | 83.60 % | 78.01 % | 0.7845 | 88.21 % | 94.48 % |
+| `gaussian_blur` | 82.59 % | 79.24 % | 0.7822 | 85.92 % | 94.20 % |
+| `illumination_low` | 81.57 % | 79.51 % | 0.7758 | 86.07 % | 93.43 % |
+| **Media bajo ruido** | **84.24 %** | **79.04 %** | **0.7936** | **87.75 %** | **95.58 %** |

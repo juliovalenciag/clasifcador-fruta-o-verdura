@@ -1,13 +1,54 @@
 source,original_label,class_id,status,notes
 fruits360,Apple Braeburn,fruta,approved,
+fruits360,Apple Braeburn 1,fruta,approved,
 fruits360,Apple Golden 1,fruta,approved,
 fruits360,Apple Granny Smith,fruta,approved,
+fruits360,Apple Granny Smith 1,fruta,approved,
 fruits360,Apple Red Delicious,fruta,approved,
+fruits360,Apple Red Delicious 1,fruta,approved,
+fruits360,Avocado 1,fruta,approved,
 fruits360,Banana,fruta,approved,
+fruits360,Banana 1,fruta,approved,
 fruits360,Banana Red,fruta,approved,
+fruits360,Banana Red 1,fruta,approved,
+fruits360,Bean pod 1,fruta,approved,Vaina; criterio botánico unificado
+fruits360,Blueberry 1,fruta,approved,
+fruits360,Cantaloupe 1,fruta,approved,
+fruits360,Cantaloupe 2,fruta,approved,
+fruits360,Corn 1,fruta,approved,Criterio botánico unificado
+fruits360,Cucumber 1,fruta,approved,Criterio botánico
+fruits360,Eggplant 1,fruta,approved,Criterio botánico
+fruits360,Fig 1,fruta,approved,
+fruits360,Kiwi 1,fruta,approved,
 fruits360,Orange,fruta,approved,
+fruits360,Orange 1,fruta,approved,
+fruits360,Passion Fruit 1,fruta,approved,
+fruits360,Pepper Green 1,fruta,approved,Criterio botánico
+fruits360,Pineapple 1,fruta,approved,
+fruits360,Plum 1,fruta,approved,
 fruits360,Tomato 1,fruta,approved,Criterio botánico
-fruits360,Carrot 1,verdura,approved,
+fruits360,Watermelon 1,fruta,approved,
+fruits360,Zucchini 1,fruta,approved,Criterio botánico
+fruits360,Beetroot 1,verdura,approved,Raíz
+fruits360,Cabbage red 1,verdura,approved,Hoja
+fruits360,Cabbage white 1,verdura,approved,Hoja
+fruits360,Carrot 1,verdura,approved,Raíz
+fruits360,Cauliflower 1,verdura,approved,Flor
+fruits360,Celery 1,verdura,approved,Tallo y hoja
+fruits360,Ginger 2,verdura,approved,Rizoma
+fruits360,Ginger Root 1,verdura,approved,Rizoma
+fruits360,Kohlrabi 1,verdura,approved,Tallo bulboso
+fruits360,Onion 2,verdura,approved,Bulbo
+fruits360,Onion Red 1,verdura,approved,Bulbo
+fruits360,Onion Red 2,verdura,approved,Bulbo
+fruits360,Onion Red 3,verdura,approved,Bulbo
+fruits360,Onion White 1,verdura,approved,Bulbo
+fruits360,Onion White 2,verdura,approved,Bulbo
+fruits360,Potato Red 1,verdura,approved,Tubérculo
+fruits360,Potato Red 2,verdura,approved,Tubérculo
+fruits360,Potato Sweet 1,verdura,approved,Tubérculo
+fruits360,Potato White 1,verdura,approved,Tubérculo
+fruits360,garlic bulb 1,verdura,approved,Bulbo
 kritikseth36,apple,fruta,approved,
 kritikseth36,banana,fruta,approved,
 kritikseth36,grapes,fruta,approved,
@@ -159,3 +200,99 @@ team_photos,fruta,fruta,approved,Carpeta binaria controlada por el equipo
 team_photos,verdura,verdura,approved,Carpeta binaria controlada por el equipo
 team_photos_train,fruta,fruta,approved,Carpeta binaria controlada por el equipo
 team_photos_train,verdura,verdura,approved,Carpeta binaria controlada por el equipo
+grocery_store,Golden-Delicious,fruta,approved,Manzana
+grocery_store,Granny-Smith,fruta,approved,Manzana
+grocery_store,Pink-Lady,fruta,approved,Manzana
+grocery_store,Red-Delicious,fruta,approved,Manzana
+grocery_store,Royal-Gala,fruta,approved,Manzana
+grocery_store,Avocado,fruta,approved,
+grocery_store,Banana,fruta,approved,
+grocery_store,Kiwi,fruta,approved,
+grocery_store,Lemon,fruta,approved,
+grocery_store,Lime,fruta,approved,
+grocery_store,Mango,fruta,approved,
+grocery_store,Cantaloupe,fruta,approved,Melón
+grocery_store,Galia-Melon,fruta,approved,Melón
+grocery_store,Honeydew-Melon,fruta,approved,Melón
+grocery_store,Watermelon,fruta,approved,Sandía
+grocery_store,Nectarine,fruta,approved,Nectarina
+grocery_store,Orange,fruta,approved,
+grocery_store,Papaya,fruta,approved,
+grocery_store,Passion-Fruit,fruta,approved,Maracuyá
+grocery_store,Peach,fruta,approved,Durazno
+grocery_store,Anjou,fruta,approved,Pera
+grocery_store,Conference,fruta,approved,Pera
+grocery_store,Kaiser,fruta,approved,Pera
+grocery_store,Pineapple,fruta,approved,
+grocery_store,Plum,fruta,approved,Ciruela
+grocery_store,Pomegranate,fruta,approved,Granada
+grocery_store,Red-Grapefruit,fruta,approved,Toronja
+grocery_store,Satsumas,fruta,approved,Mandarina
+grocery_store,Bravo-Apple-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Bravo-Orange-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,God-Morgon-Apple-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,God-Morgon-Orange-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,God-Morgon-Orange-Red-Grapefruit-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,God-Morgon-Red-Grapefruit-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Tropicana-Apple-Juice,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Tropicana-Golden-Grapefruit,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Tropicana-Juice-Smooth,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Tropicana-Mandarin-Morning,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Ecological-Medium-Fat-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Lactose-Medium-Fat-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Medium-Fat-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Standard-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Garant-Ecological-Medium-Fat-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Garant-Ecological-Standard-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Oatly-Natural-Oatghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Oatly-Oat-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Ecological-Sour-Cream,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Sour-Cream,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Sour-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Alpro-Blueberry-Soyghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Alpro-Vanilla-Soyghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Alpro-Fresh-Soy-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Alpro-Shelf-Soy-Milk,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Mild-Vanilla-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Natural-Mild-Low-Fat-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Arla-Natural-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Valio-Vanilla-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Yoggi-Strawberry-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Yoggi-Vanilla-Yoghurt,,rejected,Producto procesado/empaquetado fuera del alcance binario
+grocery_store,Asparagus,verdura,approved,Tallo
+grocery_store,Aubergine,fruta,approved,Berenjena; criterio botánico
+grocery_store,Cabbage,verdura,approved,Hoja
+grocery_store,Carrots,verdura,approved,Raíz
+grocery_store,Cucumber,fruta,approved,Criterio botánico
+grocery_store,Garlic,verdura,approved,Bulbo
+grocery_store,Ginger,verdura,approved,Rizoma
+grocery_store,Leek,verdura,approved,Bulbo y tallo foliar
+grocery_store,Brown-Cap-Mushroom,,rejected,Hongo fuera del alcance binario
+grocery_store,Yellow-Onion,verdura,approved,Bulbo
+grocery_store,Green-Bell-Pepper,fruta,approved,Criterio botánico
+grocery_store,Orange-Bell-Pepper,fruta,approved,Criterio botánico
+grocery_store,Red-Bell-Pepper,fruta,approved,Criterio botánico
+grocery_store,Yellow-Bell-Pepper,fruta,approved,Criterio botánico
+grocery_store,Floury-Potato,verdura,approved,Tubérculo
+grocery_store,Solid-Potato,verdura,approved,Tubérculo
+grocery_store,Sweet-Potato,verdura,approved,Tubérculo
+grocery_store,Red-Beet,verdura,approved,Raíz
+grocery_store,Beef-Tomato,fruta,approved,Criterio botánico
+grocery_store,Regular-Tomato,fruta,approved,Criterio botánico
+grocery_store,Vine-Tomato,fruta,approved,Criterio botánico
+grocery_store,Zucchini,fruta,approved,Criterio botánico
+vegetable_ahmed,Bean,fruta,approved,Vaina; criterio botánico unificado
+vegetable_ahmed,Bitter_Gourd,fruta,approved,Criterio botánico
+vegetable_ahmed,Bottle_Gourd,fruta,approved,Criterio botánico
+vegetable_ahmed,Brinjal,fruta,approved,Berenjena; criterio botánico
+vegetable_ahmed,Broccoli,verdura,approved,Flor y tallo
+vegetable_ahmed,Cabbage,verdura,approved,Hoja
+vegetable_ahmed,Capsicum,fruta,approved,Criterio botánico
+vegetable_ahmed,Carrot,verdura,approved,Raíz
+vegetable_ahmed,Cauliflower,verdura,approved,Flor
+vegetable_ahmed,Cucumber,fruta,approved,Criterio botánico
+vegetable_ahmed,Papaya,fruta,approved,
+vegetable_ahmed,Potato,verdura,approved,Tubérculo
+vegetable_ahmed,Pumpkin,fruta,approved,Criterio botánico
+vegetable_ahmed,Radish,verdura,approved,Raíz
+vegetable_ahmed,Tomato,fruta,approved,Criterio botánico

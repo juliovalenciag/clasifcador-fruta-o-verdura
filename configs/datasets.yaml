@@ -17,8 +17,99 @@ datasets:
       test: [test, testing]
 
   - id: fruits360
-    name: Fruits-360 100x100
+    name: Fruits-360 100x100 (Subconjunto Balanceado Fruta/Verdura)
     url: https://github.com/fruits-360/fruits-360-100x100
+    git_repo: https://github.com/fruits-360/fruits-360-100x100.git
+    git_revision: c23fa253bb3281960a741f51be86824c17bb2244
+    git_include_paths:
+      - Training/Beetroot 1
+      - Training/Cabbage red 1
+      - Training/Cabbage white 1
+      - Training/Carrot 1
+      - Training/Cauliflower 1
+      - Training/Celery 1
+      - Training/Ginger 2
+      - Training/Ginger Root 1
+      - Training/Kohlrabi 1
+      - Training/Onion 2
+      - Training/Onion Red 1
+      - Training/Onion Red 2
+      - Training/Onion Red 3
+      - Training/Onion White 1
+      - Training/Onion White 2
+      - Training/Potato Red 1
+      - Training/Potato Red 2
+      - Training/Potato Sweet 1
+      - Training/Potato White 1
+      - Training/garlic bulb 1
+      - Training/Apple Braeburn 1
+      - Training/Apple Golden 1
+      - Training/Apple Granny Smith 1
+      - Training/Apple Red Delicious 1
+      - Training/Avocado 1
+      - Training/Banana 1
+      - Training/Banana Red 1
+      - Training/Bean pod 1
+      - Training/Blueberry 1
+      - Training/Cantaloupe 1
+      - Training/Cantaloupe 2
+      - Training/Corn 1
+      - Training/Cucumber 1
+      - Training/Eggplant 1
+      - Training/Fig 1
+      - Training/Kiwi 1
+      - Training/Orange 1
+      - Training/Passion Fruit 1
+      - Training/Pepper Green 1
+      - Training/Pineapple 1
+      - Training/Plum 1
+      - Training/Tomato 1
+      - Training/Watermelon 1
+      - Training/Zucchini 1
+      - Test/Beetroot 1
+      - Test/Cabbage red 1
+      - Test/Cabbage white 1
+      - Test/Carrot 1
+      - Test/Cauliflower 1
+      - Test/Celery 1
+      - Test/Ginger 2
+      - Test/Ginger Root 1
+      - Test/Kohlrabi 1
+      - Test/Onion 2
+      - Test/Onion Red 1
+      - Test/Onion Red 2
+      - Test/Onion Red 3
+      - Test/Onion White 1
+      - Test/Onion White 2
+      - Test/Potato Red 1
+      - Test/Potato Red 2
+      - Test/Potato Sweet 1
+      - Test/Potato White 1
+      - Test/garlic bulb 1
+      - Test/Apple Braeburn 1
+      - Test/Apple Golden 1
+      - Test/Apple Granny Smith 1
+      - Test/Apple Red Delicious 1
+      - Test/Avocado 1
+      - Test/Banana 1
+      - Test/Banana Red 1
+      - Test/Bean pod 1
+      - Test/Blueberry 1
+      - Test/Cantaloupe 1
+      - Test/Cantaloupe 2
+      - Test/Corn 1
+      - Test/Cucumber 1
+      - Test/Eggplant 1
+      - Test/Fig 1
+      - Test/Kiwi 1
+      - Test/Orange 1
+      - Test/Passion Fruit 1
+      - Test/Pepper Green 1
+      - Test/Pineapple 1
+      - Test/Plum 1
+      - Test/Tomato 1
+      - Test/Watermelon 1
+      - Test/Zucchini 1
     path: data/raw/fruits360
     role: trainable
     enabled: false
@@ -81,6 +172,42 @@ datasets:
       validation: [val, valid, validation]
       test: [test, testing]
 
+  - id: grocery_store
+    name: Grocery Store Dataset (Klasson et al.)
+    url: https://github.com/marcusklasson/GroceryStoreDataset
+    # 5,125 fotografías reales de teléfono en supermercados (Fruit, Vegetables y Packages).
+    git_repo: https://github.com/marcusklasson/GroceryStoreDataset.git
+    # Commit fijado: evita que una actualización del repositorio cambie el experimento.
+    git_revision: fc80ba90f803d79d0383df52c5a4ac5de99ff6fc
+    git_include_paths:
+      - dataset/train
+      - dataset/val
+      - dataset/test
+      - dataset/classes.csv
+    path: data/raw/grocery_store
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
+  - id: vegetable_ahmed
+    name: Vegetable Image Dataset (Ahmed et al.)
+    url: https://www.kaggle.com/datasets/misrakahmed/vegetable-image-dataset
+    # 21,000 imágenes en 15 categorías (6 verduras botánicas y 9 frutos culinarios).
+    # Versión 1 (571,741,740 bytes, CC BY-SA 4.0).
+    kaggle_handle: misrakahmed/vegetable-image-dataset/versions/1
+    path: data/raw/vegetable_ahmed
+    role: trainable
+    enabled: true
+    label_from: parent
+    split_aliases:
+      train: [train, training]
+      validation: [val, valid, validation]
+      test: [test, testing]
+
   - id: google_shared
     name: Dataset compartido por Google
     url: https://share.google/jp8Kra6Z0zI7dGpQf
@@ -99,9 +226,10 @@ datasets:
     path: data/raw/team_photos_train
     role: trainable
     enabled: true
+    # El feedback de la interfaz nunca participa en validation ni test.
+    fixed_split: train
     label_from: parent
     split_aliases: {}
-
   # Este conjunto se congela como prueba externa y no se mezcla con train.
   - id: team_photos
     name: Fotografías del equipo para prueba externa
@@ -110,4 +238,3 @@ datasets:
     enabled: true
     label_from: parent
     split_aliases: {}
-
