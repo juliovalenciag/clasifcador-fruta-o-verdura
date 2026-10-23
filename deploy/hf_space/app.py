@@ -18,7 +18,7 @@ os.environ.setdefault("FRUTAS_DISABLE_FEEDBACK", "1")
 @st.cache_resource(show_spinner=False)
 def _download_model() -> str:
     return hf_hub_download(
-        os.environ.get("FRUTAS_MODEL_REPO", "Machine-Learning-ESCOM/frutas-verduras-modelo"),
+        os.environ.get("FRUTAS_MODEL_REPO", "ml-escom/frutas-verduras-modelo"),
         "classical_model.joblib",
         revision=os.environ.get("FRUTAS_MODEL_REVISION") or None,
         local_dir=ROOT / "artifacts",

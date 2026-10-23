@@ -2,8 +2,8 @@
 # Recomendado: crear una organización gratuita en https://huggingface.co/organizations/new
 # e invitar a cada integrante con rol "write"; después reemplace el namespace.
 # La autenticación se hace con `hf auth login` o la variable HF_TOKEN (nunca en el repo).
-model_repo: Machine-Learning-ESCOM/frutas-verduras-modelo
-features_repo: Machine-Learning-ESCOM/frutas-verduras-features
+model_repo: ml-escom/frutas-verduras-modelo
+features_repo: ml-escom/frutas-verduras-features
 private: true
 # Fija aquí un commit o etiqueta para que `hub pull-model` descargue siempre el mismo
 # modelo (vacío = la última versión en main).
