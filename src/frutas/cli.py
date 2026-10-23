@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from .audit import build_audit_report
 from .config import ProjectPaths
 from .dedupe import mark_duplicates
@@ -59,6 +61,59 @@ def main() -> None:
     subparsers.add_parser("audit", help="Genera un reporte Markdown del estado de los datos.")
     subparsers.add_parser("all", help="Ejecuta inventory, dedupe, split y audit.")
 
+    extract = subparsers.add_parser(
+        "extract-features",
+        help=(
+            "Extrae una sola vez las características de todas las imágenes elegibles "
+            "y las guarda en data/features/<extractor_id>/ (incremental por SHA-256)."
+        ),
+    )
+    extract.add_argument("--image-size", type=int, default=64)
+    extract.add_argument("--workers", type=int, default=0, help="Procesos; 0 = automático.")
+    extract.add_argument("--store", help="Directorio de la caché; por defecto data/features/<id>.")
+
+    hub = subparsers.add_parser(
+        "hub",
+        help="Comparte modelos y cachés de características con Hugging Face Hub.",
+    )
+    hub_commands = hub.add_subparsers(dest="hub_command", required=True)
+    hub_push_model = hub_commands.add_parser("push-model", help="Sube artifacts/classical_model.joblib.")
+    hub_push_model.add_argument("--artifacts", default="artifacts")
+    hub_push_model.add_argument("--message")
+    hub_push_model.add_argument("--tag", help="Etiqueta opcional, p. ej. v2.2.0.")
+    hub_pull_model = hub_commands.add_parser("pull-model", help="Descarga el modelo del equipo.")
+    hub_pull_model.add_argument("--artifacts", default="artifacts")
+    hub_pull_model.add_argument("--revision", help="Commit o etiqueta; por defecto main.")
+    hub_push_features = hub_commands.add_parser("push-features", help="Sube una caché de características.")
+    hub_push_features.add_argument("--store", help="Por defecto la caché del extractor de 64 px.")
+    hub_push_features.add_argument("--message")
+    hub_pull_features = hub_commands.add_parser("pull-features", help="Descarga una caché de características.")
+    hub_pull_features.add_argument("--id", dest="store_id", help="extractor_id; por defecto el de 64 px.")
+    hub_pull_features.add_argument("--revision")
+    hub_commands.add_parser("list-features", help="Lista las cachés disponibles en el Hub.")
+
+    audit_labels = subparsers.add_parser(
+        "audit-labels",
+        help=(
+            "Lista imágenes de train cuya etiqueta contradice un modelo out-of-fold "
+            "(platos, jugos, escenas mixtas) para revisión humana."
+        ),
+    )
+    audit_labels.add_argument("--features", help="Caché; por defecto la de 64 px.")
+    audit_labels.add_argument("--threshold", type=float, default=0.15)
+    audit_labels.add_argument("--folds", type=int, default=3)
+    audit_labels.add_argument("--output", default="artifacts/label_suspects.csv")
+    audit_labels.add_argument(
+        "--contact-sheets",
+        default="artifacts/label_review",
+        help="Carpeta para mosaicos de revisión (requiere imágenes); vacío los omite.",
+    )
+    apply_review = subparsers.add_parser(
+        "apply-label-review",
+        help="Agrega a configs/excluded_images.csv las filas revisadas con excluir=si.",
+    )
+    apply_review.add_argument("reviewed_csv")
+
     baseline_train = subparsers.add_parser(
         "train-baseline",
         help="Entrena el baseline binario clásico con HSV, HOG y LBP.",
@@ -98,10 +153,19 @@ def main() -> None:
     classic_train.add_argument(
         "--max-per-source-label",
         type=int,
+        default=0,
+        help=(
+            "Máximo por fuente y etiqueta original en train. 0 (por defecto) usa "
+            "todas las imágenes de train."
+        ),
+    )
+    classic_train.add_argument(
+        "--eval-max-per-source-label",
+        type=int,
         default=180,
         help=(
-            "Máximo por fuente y etiqueta original en cada split; evita que una "
-            "fuente masiva domine. 0 desactiva el límite."
+            "Máximo por fuente y etiqueta en validation y test; evita que una fuente "
+            "masiva domine la selección y las métricas. 0 desactiva el límite."
         ),
     )
     classic_train.add_argument(
@@ -112,6 +176,21 @@ def main() -> None:
             "Máximo de filas balanceadas para cada SVM RBF con PCA; los demás modelos usan "
             "todas las filas. 0 desactiva el límite."
         ),
+    )
+    classic_train.add_argument(
+        "--features",
+        nargs="?",
+        const="auto",
+        help=(
+            "Usa una caché de características en lugar de leer imágenes. Sin valor usa "
+            "data/features/<id> del --image-size. Si no existe data/processed/dataset.csv "
+            "se entrena con el manifiesto incluido en la caché (no requiere imágenes)."
+        ),
+    )
+    classic_train.add_argument(
+        "--no-exclusions",
+        action="store_true",
+        help="Ignora configs/excluded_images.csv (exclusiones de train por revisión manual).",
     )
     classic_train.add_argument("--uncertainty-threshold", type=float, default=0.60)
     classic_train.add_argument("--seed", type=int, default=42)
@@ -235,6 +314,79 @@ def main() -> None:
         if not source.exists():
             parser.error("No existe un manifiesto para auditar.")
         build_audit_report(source, paths.audit_report)
+    if args.command == "extract-features":
+        from .classic_features import FeatureConfig
+        from .feature_store import build_feature_store, default_store_dir
+
+        if not paths.split_manifest.exists():
+            parser.error("No existe data/processed/dataset.csv; ejecute primero all.")
+        config = FeatureConfig(image_size=args.image_size)
+        store_dir = (
+            paths.root / args.store if args.store else default_store_dir(paths.root, config)
+        )
+        report = build_feature_store(
+            paths.split_manifest, store_dir, config, workers=args.workers or None
+        )
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    if args.command == "hub":
+        from . import hub as hub_module
+
+        if args.hub_command == "push-model":
+            report = hub_module.push_model(
+                paths, paths.root / args.artifacts, args.message, args.tag
+            )
+        elif args.hub_command == "pull-model":
+            report = hub_module.pull_model(paths, paths.root / args.artifacts, args.revision)
+        elif args.hub_command == "push-features":
+            from .classic_features import FeatureConfig
+            from .feature_store import default_store_dir
+
+            store_dir = (
+                paths.root / args.store
+                if args.store
+                else default_store_dir(paths.root, FeatureConfig())
+            )
+            report = hub_module.push_features(paths, store_dir, args.message)
+        elif args.hub_command == "pull-features":
+            report = hub_module.pull_features(paths, args.store_id, args.revision)
+        else:
+            report = {"feature_stores": hub_module.list_remote_feature_stores(paths)}
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    if args.command == "audit-labels":
+        from .classic_features import FeatureConfig
+        from .feature_store import default_store_dir, load_feature_store
+        from .label_audit import audit_train_labels, load_exclusions, write_contact_sheets
+
+        store_dir = (
+            paths.root / args.features
+            if args.features
+            else default_store_dir(paths.root, FeatureConfig())
+        )
+        store = load_feature_store(store_dir)
+        manifest = (
+            pd.read_csv(paths.split_manifest, dtype=str, keep_default_na=False)
+            if paths.split_manifest.exists()
+            else store.manifest
+        )
+        report = audit_train_labels(
+            store,
+            manifest,
+            paths.root / args.output,
+            folds=args.folds,
+            probability_threshold=args.threshold,
+            already_excluded=load_exclusions(paths.excluded_images),
+        )
+        if args.contact_sheets and "path" in manifest:
+            sheets = write_contact_sheets(
+                paths.root / args.output, paths.root / args.contact_sheets
+            )
+            report["contact_sheets"] = len(sheets)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    if args.command == "apply-label-review":
+        from .label_audit import apply_label_review
+
+        report = apply_label_review(Path(args.reviewed_csv).resolve(), paths.excluded_images)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
     if args.command == "train-baseline":
         from .baseline import train_binary_baseline
         from .classic_features import FeatureConfig
@@ -261,21 +413,43 @@ def main() -> None:
     if args.command == "train-classic":
         from .classic_features import FeatureConfig
         from .classical_training import train_classical_suite
+        from .label_audit import load_exclusions
 
-        if not paths.split_manifest.exists():
+        feature_config = FeatureConfig(image_size=args.image_size)
+        store = None
+        manifest_path = paths.split_manifest
+        if args.features:
+            from .feature_store import default_store_dir, load_feature_store
+
+            store_dir = (
+                default_store_dir(paths.root, feature_config)
+                if args.features == "auto"
+                else paths.root / args.features
+            )
+            store = load_feature_store(store_dir)
+            feature_config = store.feature_config
+            if not manifest_path.exists():
+                manifest_path = store_dir / "manifest.csv"
+                print(f"Entrenando solo con la caché: {store_dir}")
+        if not manifest_path.exists():
             parser.error("No existe data/processed/dataset.csv; ejecute primero all.")
         _, metrics = train_classical_suite(
-            manifest_path=paths.split_manifest,
+            manifest_path=manifest_path,
             model_path=paths.root / args.model,
             metrics_path=paths.root / args.metrics,
             selection_path=paths.root / args.selection,
-            feature_config=FeatureConfig(image_size=args.image_size),
+            feature_config=feature_config,
             max_per_class=args.max_per_class,
             max_per_source_label=args.max_per_source_label,
+            eval_max_per_source_label=args.eval_max_per_source_label,
             svm_max_rows=args.svm_max_rows,
             augmentations=args.augmentations,
             uncertainty_threshold=args.uncertainty_threshold,
             seed=args.seed,
+            feature_store=store,
+            excluded_train_sha256=None if args.no_exclusions else load_exclusions(
+                paths.excluded_images
+            ),
         )
         summary = {
             "selected_model": metrics["selected_model"],

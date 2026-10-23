@@ -1,0 +1,2 @@
+# Fije @<etiqueta o commit> en lugar de @main para que el Space no cambie solo.
+clasificador-frutas-verduras[app] @ git+https://github.com/juliovalenciag/clasifcador-fruta-o-verdura.git@main

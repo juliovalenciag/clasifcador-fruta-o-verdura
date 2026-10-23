@@ -39,6 +39,7 @@ from .classic_features import (
     extract_classic_features,
     safe_rgb,
 )
+from .feature_store import FeatureStore
 
 
 def _eligible(frame: pd.DataFrame, split: str) -> pd.DataFrame:
@@ -282,6 +283,46 @@ def _extract_features(
     return np.stack(vectors), np.asarray(labels), accepted
 
 
+def _features_for(
+    frame: pd.DataFrame,
+    config: FeatureConfig,
+    augmentations: int = 0,
+    seed: int = 42,
+    description: str = "Extrayendo características",
+    store: FeatureStore | None = None,
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    """Usa la caché por SHA-256 cuando existe y solo extrae lo que falta."""
+
+    if store is None or augmentations > 0 or "sha256" not in frame:
+        return _extract_features(frame, config, augmentations, seed, description)
+
+    rows = store.lookup(frame["sha256"])
+    cached = rows >= 0
+    missing = frame.loc[~cached]
+    if "path" in missing:
+        missing = missing[missing["path"].astype(str).map(lambda v: bool(v) and Path(v).exists())]
+    skipped = int((~cached).sum()) - len(missing)
+    if skipped:
+        print(
+            f"Aviso: {description}: se omiten {skipped} imágenes que no están en la "
+            "caché ni en disco."
+        )
+    parts_x = [np.asarray(store.features[rows[cached]], dtype=np.float32)]
+    parts_y = [frame.loc[cached, "class_id"].astype(str).to_numpy()]
+    parts_frame = [frame.loc[cached]]
+    if not missing.empty:
+        x_new, y_new, accepted_new = _extract_features(
+            missing.reset_index(drop=True), config, 0, seed, f"{description} (sin caché)"
+        )
+        parts_x.append(x_new)
+        parts_y.append(y_new)
+        parts_frame.append(accepted_new)
+    accepted = pd.concat(parts_frame, ignore_index=True)
+    if accepted.empty:
+        raise ValueError(f"{description}: no hay características disponibles.")
+    return np.concatenate(parts_x), np.concatenate(parts_y), accepted
+
+
 def _candidate_estimators(
     seed: int,
     config: FeatureConfig | None = None,
@@ -292,8 +333,8 @@ def _candidate_estimators(
     cv_folds = 2 if small_regime else 3
     et_trees = 64 if small_regime else 500
     et_leaf = 1 if small_regime else 3
-    hgb_iter_63 = 60 if small_regime else 420
-    hgb_iter_95 = 60 if small_regime else 480
+    hgb_iter_63 = 60 if small_regime else 1000
+    hgb_iter_95 = 60 if small_regime else 1000
     hgb_leaf_63 = max(1, min(20, n_samples // 5))
     hgb_leaf_95 = max(1, min(15, n_samples // 5))
     use_early_stop = not small_regime
@@ -393,22 +434,24 @@ def _candidate_estimators(
         ),
         "hgb_depth_63": HistGradientBoostingClassifier(
             max_iter=hgb_iter_63,
-            learning_rate=0.06,
+            learning_rate=0.08,
             max_leaf_nodes=63,
             min_samples_leaf=hgb_leaf_63,
             l2_regularization=1.5,
             class_weight="balanced",
             early_stopping=use_early_stop,
+            n_iter_no_change=40,
             random_state=seed,
         ),
         "hgb_depth_95": HistGradientBoostingClassifier(
             max_iter=hgb_iter_95,
-            learning_rate=0.05,
+            learning_rate=0.06,
             max_leaf_nodes=95,
             min_samples_leaf=hgb_leaf_95,
             l2_regularization=2.0,
             class_weight="balanced",
             early_stopping=use_early_stop,
+            n_iter_no_change=40,
             random_state=seed + 7,
         ),
     }
@@ -611,13 +654,23 @@ def train_classical_suite(
     selection_path: Path,
     feature_config: FeatureConfig | None = None,
     max_per_class: int | None = None,
-    max_per_source_label: int | None = 180,
+    max_per_source_label: int | None = 0,
     svm_max_rows: int | None = 14000,
     augmentations: int = 0,
     uncertainty_threshold: float = 0.60,
     seed: int = 42,
+    feature_store: FeatureStore | None = None,
+    eval_max_per_source_label: int | None = 180,
+    excluded_train_sha256: set[str] | None = None,
 ) -> tuple[ClassicalImageClassifier, dict[str, object]]:
-    """Selecciona en validación, reentrena y toca test una sola vez."""
+    """Selecciona en validación, reentrena y toca test una sola vez.
+
+    ``max_per_source_label`` limita solo train (0 = todas las imágenes; usar todo
+    train sube ~2.5 pts de F1 en validation frente al tope histórico de 180). Validation y test
+    conservan ``eval_max_per_source_label`` para que ninguna fuente masiva domine
+    la selección ni las métricas reportadas. ``excluded_train_sha256`` (revisión
+    manual de ``audit-labels``) solo se descarta de train.
+    """
 
     if augmentations < 0:
         raise ValueError("augmentations no puede ser negativo.")
@@ -627,20 +680,32 @@ def train_classical_suite(
         raise ValueError("uncertainty_threshold debe estar entre 0.5 y 1.0.")
 
     config = feature_config or FeatureConfig()
+    if feature_store is not None:
+        if feature_store.feature_config != config:
+            raise ValueError(
+                "La caché de características se generó con otra FeatureConfig: "
+                f"{feature_store.meta.get('extractor_id')}."
+            )
     manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    eligible_train = _eligible(manifest, "train")
+    excluded_count = 0
+    if excluded_train_sha256 and "sha256" in eligible_train:
+        excluded_mask = eligible_train["sha256"].isin(excluded_train_sha256)
+        excluded_count = int(excluded_mask.sum())
+        eligible_train = eligible_train[~excluded_mask].reset_index(drop=True)
     train = _sample_per_source_label(
-        _sample_per_class(_eligible(manifest, "train"), max_per_class, seed),
+        _sample_per_class(eligible_train, max_per_class, seed),
         max_per_source_label,
         seed,
     )
     validation = _sample_per_source_label(
         _sample_per_class(_eligible(manifest, "validation"), max_per_class, seed + 1),
-        max_per_source_label,
+        eval_max_per_source_label,
         seed + 1,
     )
     test = _sample_per_source_label(
         _sample_per_class(_eligible(manifest, "test"), max_per_class, seed + 2),
-        max_per_source_label,
+        eval_max_per_source_label,
         seed + 2,
     )
     external = _sample_per_class(
@@ -650,14 +715,14 @@ def train_classical_suite(
         if frame.empty:
             raise ValueError(f"El split obligatorio {name!r} está vacío.")
 
-    x_train, y_train, accepted_train = _extract_features(
-        train, config, augmentations, seed, "Train"
+    x_train, y_train, accepted_train = _features_for(
+        train, config, augmentations, seed, "Train", feature_store
     )
-    x_validation, y_validation, accepted_validation = _extract_features(
-        validation, config, 0, seed, "Validación"
+    x_validation, y_validation, accepted_validation = _features_for(
+        validation, config, 0, seed, "Validación", feature_store
     )
-    x_test, y_test, accepted_test = _extract_features(
-        test, config, 0, seed, "Test"
+    x_test, y_test, accepted_test = _features_for(
+        test, config, 0, seed, "Test", feature_store
     )
     if set(np.unique(y_train)) != set(CLASSES):
         raise ValueError("Train debe contener ejemplos válidos de fruta y verdura.")
@@ -755,7 +820,12 @@ def train_classical_suite(
             "seed": seed,
             "augmentations_per_train_image": augmentations,
             "max_per_source_label": max_per_source_label,
+            "eval_max_per_source_label": eval_max_per_source_label,
+            "excluded_train_images": excluded_count,
             "svm_max_rows": svm_max_rows,
+            "feature_store": feature_store.meta.get("extractor_id")
+            if feature_store is not None
+            else None,
             "selected_on": "validation",
             "decision_threshold_selected_on": "validation",
             "scikit_learn_version": sklearn_version,
@@ -773,8 +843,8 @@ def train_classical_suite(
     external_metrics: dict[str, object] | None = None
     accepted_external = external.iloc[0:0].copy()
     if not external.empty:
-        x_external, y_external, accepted_external = _extract_features(
-            external, config, 0, seed, "Evaluación externa"
+        x_external, y_external, accepted_external = _features_for(
+            external, config, 0, seed, "Evaluación externa", feature_store
         )
         external_metrics = _metrics(
             y_external,
@@ -797,6 +867,8 @@ def train_classical_suite(
         "feature_count": int(x_train.shape[1]),
         "augmentations_per_train_image": augmentations,
         "max_per_source_label": max_per_source_label,
+        "eval_max_per_source_label": eval_max_per_source_label,
+        "excluded_train_images": excluded_count,
         "svm_max_rows": svm_max_rows,
         "original_images": {
             "train": len(accepted_train),

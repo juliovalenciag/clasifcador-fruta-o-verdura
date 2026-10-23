@@ -18,6 +18,7 @@ class ProjectPaths:
     duplicate_report: Path
     split_manifest: Path
     audit_report: Path
+    excluded_images: Path
 
     @classmethod
     def from_root(cls, root: Path) -> "ProjectPaths":
@@ -32,6 +33,7 @@ class ProjectPaths:
             duplicate_report=root / "data" / "interim" / "duplicate_candidates.csv",
             split_manifest=root / "data" / "processed" / "dataset.csv",
             audit_report=root / "data" / "interim" / "data_report.md",
+            excluded_images=root / "configs" / "excluded_images.csv",
         )
 
 

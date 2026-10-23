@@ -830,3 +830,197 @@ def test_manifest_fixed_split_keeps_ui_feedback_in_train(tmp_path: Path) -> None
     manifest = build_manifest(ProjectPaths.from_root(tmp_path))
 
     assert manifest.loc[0, "original_split"] == "train"
+
+
+def test_feature_store_is_incremental_and_trains_without_images(tmp_path: Path) -> None:
+    from frutas.feature_store import build_feature_store, load_feature_store
+
+    colors = {
+        "fruta": [(230, 30, 25), (235, 110, 15), (190, 30, 100)],
+        "verdura": [(20, 145, 35), (35, 105, 25), (70, 170, 55)],
+    }
+    rows = []
+    for class_id, palette in colors.items():
+        for index in range(9):
+            path = tmp_path / "images" / f"{class_id}_{index}.png"
+            path.parent.mkdir(exist_ok=True)
+            # Ruido por imagen para que cada archivo tenga un SHA-256 distinto.
+            base = Image.new("RGB", (42, 42), palette[index % len(palette)])
+            base.putpixel((index, index), (index * 20, 0, 0))
+            base.save(path)
+            split = "train" if index < 5 else "validation" if index < 7 else "test"
+            rows.append(
+                {
+                    "image_id": f"{class_id}_{index}",
+                    "source": "synthetic",
+                    "path": str(path),
+                    "relative_path": path.name,
+                    "original_label": class_id,
+                    "sha256": f"{class_id}-{index:02d}",
+                    "split": split,
+                    "valid": "True",
+                    "mapping_status": "approved",
+                    "class_id": class_id,
+                }
+            )
+    manifest = tmp_path / "dataset.csv"
+    pd.DataFrame(rows[:-2]).to_csv(manifest, index=False)
+    store_dir = tmp_path / "features"
+    config = FeatureConfig(image_size=32)
+
+    first = build_feature_store(manifest, store_dir, config, workers=1)
+    assert first["new_images"] == 16
+
+    pd.DataFrame(rows).to_csv(manifest, index=False)
+    second = build_feature_store(manifest, store_dir, config, workers=1)
+    assert second["new_images"] == 2
+    assert second["reused_images"] == 16
+
+    store = load_feature_store(store_dir)
+    assert len(store) == 18
+    assert store.feature_config == config
+    assert (store.lookup(["fruta-00", "desconocido"]) == [0, -1]).all()
+
+    # Sin imágenes en disco: el entrenamiento usa solo la caché y su manifiesto.
+    for row in rows:
+        Path(row["path"]).unlink()
+    _, metrics = train_classical_suite(
+        store_dir / "manifest.csv",
+        tmp_path / "model.joblib",
+        tmp_path / "metrics.json",
+        tmp_path / "selection.csv",
+        feature_config=config,
+        seed=3,
+        feature_store=store,
+    )
+    assert metrics["original_images"]["train"] == 10
+    assert metrics["test"]["images"] == 4
+
+    with pytest.raises(ValueError, match="otra FeatureConfig"):
+        train_classical_suite(
+            store_dir / "manifest.csv",
+            tmp_path / "model.joblib",
+            tmp_path / "metrics.json",
+            tmp_path / "selection.csv",
+            feature_config=FeatureConfig(image_size=48),
+            feature_store=store,
+        )
+
+
+def test_hub_push_and_pull_use_configured_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import huggingface_hub
+
+    import frutas.hub as hub_module
+
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "hub.yaml").write_text(
+        "model_repo: equipo/modelo\nfeatures_repo: equipo/features\nprivate: true\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "classical_model.joblib").write_bytes(b"modelo")
+    (artifacts / "classical_metrics.json").write_text(
+        '{"selected_model": "hgb", "test": {"f1_macro": 0.9}}', encoding="utf-8"
+    )
+    calls: list[tuple[str, object]] = []
+
+    class FakeApi:
+        def create_repo(self, repo_id, repo_type, private, exist_ok):
+            calls.append(("create_repo", (repo_id, repo_type, private)))
+
+        def create_commit(self, repo_id, operations, commit_message, repo_type):
+            calls.append(("create_commit", [op.path_in_repo for op in operations]))
+            return SimpleNamespace(oid="abc123", commit_url="https://hf.co/c/abc123")
+
+        def create_tag(self, repo_id, tag, revision, repo_type):
+            calls.append(("create_tag", (tag, revision)))
+
+    monkeypatch.setattr(hub_module, "_api", lambda: FakeApi())
+    paths = ProjectPaths.from_root(tmp_path)
+    pushed = hub_module.push_model(paths, artifacts, tag="v9")
+
+    assert pushed["commit"] == "abc123"
+    assert ("create_repo", ("equipo/modelo", "model", True)) in calls
+    assert ("create_tag", ("v9", "abc123")) in calls
+    committed = dict(calls)["create_commit"]
+    assert {"classical_model.joblib", "classical_metrics.json", "README.md"} <= set(committed)
+
+    downloads: list[tuple[str, str | None]] = []
+
+    def fake_download(repo_id, filename, repo_type, revision, local_dir):
+        downloads.append((filename, revision))
+        if filename != "classical_model.joblib":
+            raise huggingface_hub.utils.EntryNotFoundError("sin archivo")
+        target = Path(local_dir) / filename
+        target.write_bytes(b"remoto")
+        return str(target)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    pulled = hub_module.pull_model(paths, tmp_path / "descargas", revision="v9")
+    assert pulled["revision"] == "v9"
+    assert len(pulled["files"]) == 1
+    assert (tmp_path / "descargas" / "classical_model.joblib").read_bytes() == b"remoto"
+    assert {revision for _, revision in downloads} == {"v9"}
+
+
+def test_label_audit_flags_contradictions_and_review_excludes_from_train(
+    tmp_path: Path,
+) -> None:
+    from frutas.feature_store import build_feature_store, load_feature_store
+    from frutas.label_audit import (
+        apply_label_review,
+        audit_train_labels,
+        load_exclusions,
+        write_contact_sheets,
+    )
+
+    rows = []
+    for index in range(40):
+        for class_id, rgb in (("fruta", (225, 35, 30)), ("verdura", (30, 150, 40))):
+            # Dos "frutas" verdes simulan etiquetas contaminadas de una fuente web.
+            noisy = class_id == "fruta" and index < 2
+            color = (30, 150, 40) if noisy else rgb
+            image = Image.new("RGB", (40, 40), color)
+            image.putpixel((index % 40, 0), (index * 5, 0, 0))
+            path = tmp_path / "img" / f"{class_id}_{index}.png"
+            path.parent.mkdir(exist_ok=True)
+            image.save(path)
+            rows.append(
+                {
+                    "image_id": path.stem,
+                    "source": "web",
+                    "path": str(path),
+                    "relative_path": path.name,
+                    "original_label": class_id,
+                    "sha256": path.stem,
+                    "split": "train",
+                    "valid": "True",
+                    "mapping_status": "approved",
+                    "class_id": class_id,
+                }
+            )
+    manifest = tmp_path / "dataset.csv"
+    pd.DataFrame(rows).to_csv(manifest, index=False)
+    build_feature_store(manifest, tmp_path / "store", FeatureConfig(image_size=32), workers=1)
+    store = load_feature_store(tmp_path / "store")
+
+    suspects_csv = tmp_path / "suspects.csv"
+    report = audit_train_labels(
+        store, pd.read_csv(manifest, dtype=str, keep_default_na=False), suspects_csv
+    )
+    suspects = pd.read_csv(suspects_csv, dtype=str, keep_default_na=False)
+    assert {"fruta_0", "fruta_1"} <= set(suspects["sha256"])
+    assert report["suspects"] == len(suspects) < 10
+    assert write_contact_sheets(suspects_csv, tmp_path / "sheets")
+
+    suspects.loc[suspects["sha256"] == "fruta_0", "excluir"] = "sí"
+    suspects.to_csv(suspects_csv, index=False)
+    exclusions = tmp_path / "configs" / "excluded_images.csv"
+    applied = apply_label_review(suspects_csv, exclusions)
+    assert applied["total_excluded"] == 1
+    assert load_exclusions(exclusions) == {"fruta_0"}
+    # Repetir la revisión no duplica filas.
+    assert apply_label_review(suspects_csv, exclusions)["total_excluded"] == 1

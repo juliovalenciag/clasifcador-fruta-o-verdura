@@ -1,4 +1,4 @@
-# Clasificador binario de frutas y verduras (v2.1.0)
+# Clasificador binario de frutas y verduras (v2.2.0)
 
 Proyecto de Machine Learning clásico que recibe una imagen (o una carpeta completa de fotografías) y responde únicamente una de dos clases bajo **criterio botánico estricto**: **fruta** o **verdura**. Las especies y variedades se conservan exclusivamente como metadatos de auditoría y análisis de errores.
 
@@ -10,19 +10,55 @@ La solución es **100 % Machine Learning clásico** (sin redes neuronales). En `
 - **Color, cromaticidad, índices botánicos y separación figura-fondo (839 dims — 59.7 %):** histogramas `1D` (`16` bins) de **HSV** y **CIE Lab** (global + centro), histogramas (`12` bins) de **4 índices botánicos/radiométricos** ($ExG = 2G - R - B$, $R-G$, $Y-B$, croma CIE $C^*$), histogramas de matiz (`Hue`) ponderados por saturación (suprimen fondos blancos o grises), histogramas conjuntos `2D` de cromaticidad `(H, S)` (`8x4`) y `(a*, b*)` (`6x6`), perfiles en **3 anillos radiales concéntricos** con contraste interior-borde, **segmentación automática figura-fondo** en espacio `Lab + Croma` (con momentos geométricos de excentricidad, compacidad y aspecto) y cuadrícula espacial `3x3`.
 - **Forma, energía de bordes y HOG multiescala agrupado (458 dims — 32.6 %):** energía de gradiente **Sobel** y alta frecuencia **Laplaciana** en anillos concéntricos y cuadrícula `4x4` (`44` dims) + **HOG multiescala** agrupado en `3x3` macro-regiones (media y máximo = `162` dims), celdas centrales `5x5` del objeto (`225` dims) y resumen global invariante a traslación (`27` dims).
 - **Textura LBP multiescala (108 dims — 7.7 %):** histogramas **LBP uniforme** en **3 escalas radiales** (`P=8, R=1` micro-textura; `P=16, R=2` meso-textura; `P=24, R=3` macro-textura) tanto globales como centrales.
-- **Suite de 8 modelos clásicos + Ensamble ponderado (`soft_voting_top3`):** combina **Histogram Gradient Boosting** (`HistGradientBoostingClassifier` de profundidad 63 y 95), **SVM RBF con proyección `AdaptivePCA(256)` y `BlockBalancedScaler`** (`C=10` y `C=25` sobre `14,000` filas balanceadas), **Extra Trees** (`sqrt` y `0.40`) y clasificadores lineales regularizados.
+- **Suite de 8 modelos clásicos + ensamble ponderado:** **Histogram Gradient Boosting** (`max_leaf_nodes` 63 y 95), **SVM RBF con `AdaptivePCA(256)` y `BlockBalancedScaler`** (`14,000` filas balanceadas), **Extra Trees** y clasificadores lineales. Desde `v2.2.0` se entrena con **todo train** (`78,719` imágenes en vez de `19,097`) leyendo una caché de características; el ganador en validation es `hgb_depth_95`.
 - **Filtrado automático de calidad en escenas complejas (`LVIS`):** descarta parches diminutos (`< 64x64` px) y recortes provenientes de escenas mixtas (`fruta + verdura` simultáneas) o saturadas (`> 8` objetos por imagen).
 - **Inferencia robusta (TTA):** promedio de **4 vistas en tiempo de prueba** (original, espejo horizontal, recorte central `86 %` y normalización de contraste `autocontrast`).
 
 ---
 
-## Inicio rápido
+## Trabajo en equipo: descarga solo lo que tu tarea necesita
+
+El modelo y las características se comparten en **Hugging Face Hub** (repos privados
+del equipo definidos en [configs/hub.yaml](configs/hub.yaml)). Solo una persona —quien
+agrega datasets o cambia el extractor— necesita los ~10 GB de imágenes.
+
+| Quiero… | Necesito | Tamaño | Comandos |
+|---|---|---:|---|
+| Probar el modelo, usar la app, clasificar mis fotos | el modelo | ~40 MB | `frutas-data hub pull-model` → `frutas-app` |
+| Entrenar, ajustar hiperparámetros, comparar modelos | caché de características | ~530 MB | `frutas-data hub pull-features` → `frutas-data train-classic --features` |
+| Entrenar sin usar mi computadora | nada local | — | [notebooks/03_entrenar_en_la_nube.ipynb](notebooks/03_entrenar_en_la_nube.ipynb) en Google Colab |
+| Agregar un dataset o fotos, cambiar `classic_features.py` | imágenes originales | ~10 GB | sección *Pipeline completo* ↓ |
+
+Configuración única por integrante (el token nunca va al repositorio):
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,notebooks,app]"
+hf auth login          # token de https://huggingface.co/settings/tokens
+```
 
+Flujo de la persona responsable de datos cuando cambian las imágenes:
+
+```bash
+frutas-data all                      # inventario, duplicados y splits
+frutas-data extract-features         # incremental: solo extrae SHA-256 nuevos (~2 min completo)
+frutas-data hub push-features        # el resto del equipo hace pull-features
+frutas-data train-classic --features # entrena desde la caché, sin releer imágenes
+frutas-data hub push-model --tag v2.2.0
+```
+
+Para que todos usen exactamente el mismo modelo, fije la etiqueta en
+`model_revision` de `configs/hub.yaml`. La carpeta [deploy/hf_space](deploy/hf_space)
+contiene lo necesario para publicar la interfaz como un Space de Hugging Face
+(demo web sin instalar nada).
+
+> Los modelos son archivos `joblib` (pickle): cárguelos solo desde los repositorios del
+> equipo y con la versión fijada de scikit-learn (`1.9.1`).
+
+## Pipeline completo (requiere las imágenes)
+
+```bash
 # Descarga reproducible de las fuentes activas (5 en disco + fruits360 opcional)
 frutas-data download kritikseth36
 frutas-data download fruits_youssef
@@ -36,8 +72,9 @@ frutas-data download vegetable_ahmed
 # Inventario, deduplicación SHA-256 + pHash, partición sin fugas y auditoría
 frutas-data all
 
-# Entrenamiento y selección del modelo clásico final (v2.0.0)
-frutas-data train-classic
+# Caché de características (una vez) y entrenamiento del modelo clásico
+frutas-data extract-features
+frutas-data train-classic --features
 ```
 
 Si Kaggle solicita autenticación (`kritikseth36`, `fruits_youssef` o `vegetable_ahmed`), configure su token personal en `export KAGGLE_API_TOKEN="..."`; nunca lo guarde dentro del repositorio. `lvis_fruits_vegetables` (Hugging Face), `grocery_store` (GitHub) y `fruits360` (GitHub sparse-checkout) se descargan sin requerir token de Kaggle.
@@ -79,7 +116,7 @@ El clasificador también puede probarse de **4 maneras**:
 ```bash
 frutas-data predict-classic ruta/a/mi_foto.jpg
 ```
-Devuelve en JSON la clase predicha (`fruta` o `verdura`), la confianza (`0.0` a `1.0`), las probabilidades por clase, el umbral de decisión calibrado (`0.485`), el indicador `"uncertain": true/false` (si la confianza es menor a `0.60`) y las `4` vistas TTA utilizadas.
+Devuelve en JSON la clase predicha (`fruta` o `verdura`), la confianza (`0.0` a `1.0`), las probabilidades por clase, el umbral de decisión calibrado en validation (`0.56` en `v2.2.0`), el indicador `"uncertain": true/false` (si la confianza es menor a `0.60`) y las `4` vistas TTA utilizadas.
 
 ### 2. Probar una carpeta completa de fotos por lotes
 ```bash
@@ -107,30 +144,50 @@ Evalúa el modelo sobre imágenes limpias (`clean`) y bajo 7 perturbaciones expl
 
 ---
 
-## Estado actual verificado (`v2.1.0` — modelo `v2.0.0` + interfaz de pruebas)
+## Estado actual verificado (`v2.2.0`)
 
-- **Datos auditados en disco:** `193,708` registros, `193,706` imágenes válidas, `0` etiquetas sin mapear y **`0` grupos duplicados con fuga entre particiones**.
-- **Modelo ganador:** `soft_voting_top3` (ensamble ponderado de `hgb_depth_95`, `hgb_depth_63`, `svm_rbf_c10` y `svm_rbf_c25`), con umbral de decisión `0.485` seleccionado exclusivamente en `validation` (`89.80 %` accuracy y `0.8766` F1 macro en `validation`).
-- **Desempeño en `test` multifuente muestreado (`9,293` imágenes):**
-  - **Accuracy:** **`89.65 %`** (`0.8965`, **+8.39 pts** vs `81.26 %` en `v1.1.0`)
-  - **Balanced Accuracy:** **`87.06 %`** (`0.8706`, **+6.99 pts** vs `80.07 %` en `v1.1.0`)
-  - **Precision / Recall `fruta`:** **`92.95 %`** / **`92.78 %`** (`F1 = 0.9287`)
-  - **Precision / Recall `verdura`:** **`80.95 %`** / **`81.34 %`** (`F1 = 0.8114`)
-  - **F1 Macro:** **`0.8701`** (**+9.33 pts** vs `0.7768` en `v1.1.0`)
-  - **Accuracy en predicciones confiables (`confianza >= 0.60`, cobertura `92.60 %`):** **`91.97 %`**
-- **Desempeño en `test` elegible completo con TTA (`13,141` imágenes):**
-  - **Accuracy global:** **`89.13 %`** (`F1 Macro = 0.8523`, `Accuracy confiable = 91.98 %`).
-  - **Exactitud por fuente en `test`:** `vegetable_ahmed` **`97.69 %`** (`2,165` imgs), `grocery_store` **`91.17 %`** (`1,665` fotos reales de supermercado), `fruits_youssef` **`86.97 %`** (`9,119` imgs), `kritikseth36` **`79.55 %`** (`44` imgs) y `lvis_fruits_vegetables` **`77.03 %`** (`148` recortes limpios).
-- **Ablación justa sin `vegetable_ahmed` (`10,976` imágenes de las 4 fuentes previas):** accuracy **`86.63 %`**, balanced accuracy **`80.34 %`** y F1 macro **`0.8045`** (frente a `80.34 %`, `74.55 %` y `0.7258` en `v1.1.0`).
-- **Robustez ante ruido (`evaluate-noise`, 8 condiciones sobre `1,677` imágenes de `test`):**
-  - **Exactitud en limpio (`clean`):** **`87.00 %`** (`F1 limpio = 0.8303`, +10.82 pts sobre `v1.1.0`).
-  - **Retención media de F1 Macro bajo ruido:** **`95.58 %`** (`F1 medio con ruido = 0.7936`, superando incluso el desempeño sin ruido de versiones previas).
+Mismas particiones, mismas imágenes de `test` y mismo extractor (`1,405` variables) que
+`v2.0.0`; lo que cambió es cuántos datos ve el modelo y cómo se seleccionan.
 
-Artefactos generados localmente en `artifacts/`:
-- `artifacts/classical_model.joblib`: modelo `v2.0.0` (`soft_voting_top3`) verificado y usado por defecto.
-- `artifacts/classical_metrics.json`: métricas completas de validación (`9,422` imgs) y test (`9,293` imgs).
-- `artifacts/model_selection.csv`: tabla comparativa de los 8 candidatos clásicos y el ensamble.
-- `artifacts/error_analysis_by_label.csv`: desglose de exactitud en las 145 combinaciones `(fuente, etiqueta)` de `test` (`13,141` imgs).
-- `artifacts/noise_robustness.csv`: resultados de las 8 condiciones del benchmark de estrés ante ruido.
+| Métrica | `v2.0.0` | **`v2.2.0`** |
+|---|---:|---:|
+| Imágenes de train usadas | `19,097` (tope 180 por fuente/etiqueta) | **`78,719`** (todas) |
+| Modelo seleccionado en validation | `soft_voting_top3` (4 modelos, 43 MB) | **`hgb_depth_95`** (1 modelo, 8.7 MB) |
+| F1 macro en validation (`9,422`) | `0.8766` | **`0.9019`** |
+| Test muestreado (`9,293`) — accuracy | `89.65 %` | **`91.03 %`** |
+| Test muestreado — balanced accuracy | `87.06 %` | **`88.34 %`** |
+| Test muestreado — F1 macro | `0.8701` | **`0.8863`** |
+| Precision / recall `verdura` | `80.95 %` / `81.34 %` | **`84.45 %` / `82.40 %`** |
+| Precision / recall `fruta` | `92.95 %` / `92.78 %` | **`93.42 %` / `94.28 %`** |
+| Accuracy confiable (`>= 0.60`) / cobertura | `91.97 %` / `92.60 %` | **`92.43 %` / `96.04 %`** |
+| Test completo con TTA (`13,141`) — accuracy / F1 | `89.13 %` / `0.8523` | **`90.50 %` / `0.8701`** |
+| Ruido (`1,677` imgs) — F1 limpio / F1 medio con ruido | `0.8303` / `0.7936` | `0.8367` / `0.7927` |
+
+Exactitud por fuente en `test` completo con TTA:
+
+| Fuente | `v2.0.0` | `v2.2.0` |
+|---|---:|---:|
+| `vegetable_ahmed` (`2,165`) | `97.69 %` | **`98.71 %`** |
+| `fruits_youssef` (`9,119`) | `86.97 %` | **`88.85 %`** |
+| `lvis_fruits_vegetables` (`148`) | `77.03 %` | **`78.38 %`** |
+| `kritikseth36` (`44`) | `79.55 %` | `79.55 %` |
+| `grocery_store` (`1,665`, fotos reales) | **`91.17 %`** | `90.21 %` |
+
+Limitaciones conocidas:
+
+- `grocery_store` (la única fuente de fotos reales de celular) baja `~1` pt: al usar todo
+  train, `fruits_youssef` pesa más. Sus verduras siguen siendo el punto débil
+  (`Cabbage` 0/19, `Asparagus` 1/14, `Leek` 9/21).
+- `data/external/team_photos/` está vacío: aún no existe una medición en fotos propias
+  del equipo, que es la que mejor representa el uso real.
+- Experimentos descartados (validation, mismas particiones): extraer a `128 px`
+  (F1 `0.9016` vs `0.9011`, el doble de tiempo) y añadir Bag of Visual Words con
+  DAISY + k-means (`+0.003` F1). El descriptor está cerca de su techo; las siguientes
+  mejoras deben venir de la calidad de los datos (sección 9.5 de la guía).
+
+Artefactos locales en `artifacts/` (compartibles con `frutas-data hub push-model`):
+`classical_model.joblib`, `classical_metrics.json`, `model_selection.csv`,
+`error_analysis_by_label.csv` y `noise_robustness.csv`. El modelo `v2.0.0` anterior
+queda respaldado en `artifacts/backup_v2.0.0/`.
 
 La guía operativa detallada está en [guia-equipo.md](guia-equipo.md) y el informe técnico completo en [reporte-estado-proyecto.md](reporte-estado-proyecto.md).

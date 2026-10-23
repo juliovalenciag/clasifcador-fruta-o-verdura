@@ -68,8 +68,20 @@ def render_app() -> None:
         model_path = root / model_path
     if not model_path.exists():
         st.error(
-            f"No se encontró el modelo: {model_path}. Ejecute `frutas-data train-classic`."
+            f"No se encontró el modelo: {model_path}. Descárguelo del Hub del equipo "
+            "(`frutas-data hub pull-model`) o entrénelo con `frutas-data train-classic`."
         )
+        if st.button("Descargar el modelo del equipo desde Hugging Face", type="primary"):
+            from frutas.config import ProjectPaths
+            from frutas.hub import pull_model
+
+            with st.spinner("Descargando modelo…"):
+                try:
+                    pull_model(ProjectPaths.from_root(root), model_path.parent)
+                except Exception as exc:
+                    st.error(f"No fue posible descargar el modelo: {exc}")
+                    return
+            st.rerun()
         return
 
     cached_loader = st.cache_resource(show_spinner=False)(_load_model_cached)
@@ -136,6 +148,9 @@ def render_app() -> None:
         f"Modelo: {prediction['model']} · vistas: {prediction['tta_views']} · "
         f"umbral de decisión: {float(prediction['decision_threshold']):.3f}"
     )
+
+    if os.environ.get("FRUTAS_DISABLE_FEEDBACK") == "1":
+        return
 
     with st.expander("Usar esta imagen para un futuro reentrenamiento"):
         st.write(

@@ -47,15 +47,62 @@ Se versionan:
 - `configs/datasets.yaml`.
 - `configs/classes.csv`.
 - `configs/label_mapping.csv`.
+- `configs/hub.yaml` (nombres de repositorios, nunca tokens).
+- `configs/excluded_images.csv` (exclusiones de train confirmadas por revisión humana).
 - Documentación (`README.md`, `guia-equipo.md`, `reporte-estado-proyecto.md`).
 
 No se versionan:
 
 - Imágenes.
 - Archivos ZIP de datasets.
-- Características numéricas ni manifiestos generados.
-- Modelos entrenados (`artifacts/`).
+- Características numéricas ni manifiestos generados (se comparten en Hugging Face Hub).
+- Modelos entrenados (`artifacts/`; se comparten en Hugging Face Hub).
 - Tokens de Kaggle o GitHub.
+
+### Hugging Face Hub (modelos y características)
+
+Para que nadie tenga que descargar los ~10 GB de imágenes ni reentrenar para probar
+el modelo, el equipo comparte en Hugging Face Hub dos repositorios privados
+(configurados en `configs/hub.yaml`):
+
+| Repositorio | Contenido | Quién lo actualiza |
+|---|---|---|
+| modelo (`model_repo`) | `classical_model.joblib`, métricas, tabla de selección y tarjeta del modelo | quien entrena un modelo que mejora en **validation** |
+| características (`features_repo`, tipo dataset) | `features/<extractor_id>/`: vectores `float32`, manifiesto reducido con splits y `meta.json` | la persona responsable de datos, cada vez que cambian imágenes o el extractor |
+
+Configuración inicial (una sola vez):
+
+1. El propietario crea una organización gratuita en Hugging Face, invita a cada
+   integrante con rol *write* y cambia el namespace de `configs/hub.yaml`.
+2. Cada integrante crea un token en `https://huggingface.co/settings/tokens` y ejecuta
+   `hf auth login` (en Colab: secreto `HF_TOKEN`). El token nunca se guarda en el repo.
+
+Comandos:
+
+```bash
+frutas-data hub pull-model                 # ~40 MB; suficiente para la app y predict-classic
+frutas-data hub pull-model --revision v2.2.0
+frutas-data hub list-features
+frutas-data hub pull-features              # ~530 MB; suficiente para entrenar
+frutas-data train-classic --features       # entrena sin imágenes en disco
+frutas-data hub push-features              # solo responsable de datos
+frutas-data hub push-model --tag v2.2.0    # solo tras mejorar en validation
+```
+
+Cada `push` es un commit del Hub. Para que todos usen exactamente el mismo modelo se
+fija la etiqueta en `model_revision`. Los `joblib` son pickles: se cargan solo desde los
+repositorios del equipo y con `scikit-learn==1.9.1`.
+
+**Caché de características.** `frutas-data extract-features` guarda una vez el vector de
+cada imagen elegible en `data/features/<extractor_id>/`, indexado por SHA-256. Es
+incremental (solo extrae contenidos nuevos) y el `extractor_id` cambia
+automáticamente si cambia `FeatureConfig` o `EXTRACTOR_VERSION` en
+`src/frutas/feature_store.py`. Si se modifica `classic_features.py`, se debe
+incrementar `EXTRACTOR_VERSION` para no mezclar vectores de dos extractores.
+
+**Entrenar en la nube.** `notebooks/03_entrenar_en_la_nube.ipynb` entrena en Google
+Colab usando solo la caché del Hub. **Demo web.** `deploy/hf_space/` publica la
+interfaz como Space de Hugging Face (ver su `README.md`).
 
 ### Google Drive compartido
 
@@ -358,6 +405,32 @@ determinista.
 - Balance razonable entre fruta y verdura.
 - Diversidad de fuentes, especies, fondos y condiciones.
 
+### 9.5 Revisión de etiquetas sospechosas
+
+Las fuentes web incluyen platos, jugos, ensaladas y escenas mixtas que la sección 2
+ordena excluir. Para priorizar la revisión manual:
+
+```bash
+frutas-data audit-labels            # predicciones out-of-fold sobre train desde la caché
+```
+
+Genera `artifacts/label_suspects.csv` (imágenes cuya etiqueta contradice a un modelo
+que no las vio, ordenadas por probabilidad) y mosaicos numerados en
+`artifacts/label_review/` cuando las imágenes están en disco. El trabajo se reparte
+por fuente/etiqueta: cada integrante abre los mosaicos, escribe `si` en la columna
+`excluir` de las filas que violan el criterio (y opcionalmente un `reason`) y después:
+
+```bash
+frutas-data apply-label-review artifacts/label_suspects.csv
+frutas-data train-classic --features
+```
+
+Las filas confirmadas se acumulan en `configs/excluded_images.csv` (versionado en Git,
+identificadas por SHA-256) y `train-classic` las descarta **solo de train**. No se
+filtran validation ni test con esta lista, porque las candidatas las elige el propio
+modelo y limpiar así la evaluación inflaría las métricas. No se excluye una imagen
+solo porque el modelo falle: únicamente si viola el criterio de etiquetado.
+
 ## 10. Reglas para fotografías del equipo
 
 Cada clase debe incluir ejemplos de:
@@ -427,18 +500,25 @@ frutas-data train-baseline --image-size 64 --max-per-class 1000
 frutas-data predict-baseline ruta/a/imagen.jpg
 ```
 
-## 13. Selección y ensamble clásico (`v2.0.0`)
+## 13. Selección y ensamble clásico (`v2.2.0`)
 
 El entrenamiento final se ejecuta con:
 
 ```bash
-frutas-data train-classic \
-  --image-size 64 \
-  --augmentations 0 \
-  --max-per-source-label 180 \
+frutas-data extract-features          # una vez; incremental
+frutas-data train-classic --features \
+  --max-per-source-label 0 \
+  --eval-max-per-source-label 180 \
   --svm-max-rows 14000 \
   --seed 42
 ```
+
+Desde `v2.2.0`, `--max-per-source-label` solo limita **train** y su valor por defecto es
+`0` (todas las imágenes). Validation y test conservan el tope de `180` por
+fuente/etiqueta (`--eval-max-per-source-label`) para que `fruits_youssef` no domine la
+selección ni las métricas, y siguen siendo exactamente las mismas imágenes que en
+`v2.0.0`. Las secciones históricas de abajo describen la ejecución `v2.0.0`
+(`19,097` imágenes de train); los resultados `v2.2.0` están en el `README.md`.
 
 Además, antes de muestrear, `_eligible` aplica un **filtro automático de calidad sobre `lvis_fruits_vegetables`** usando `crops_manifest.csv`: se conservan únicamente recortes con resolución mínima de `64x64` píxeles procedentes de escenas de clase pura (`scene_classes == 1`) y no saturadas (`scene_boxes <= 8`), eliminando más de `22,000` parches contaminados donde cajas de fruta y verdura se traslapaban en ensaladas o platos mixtos.
 
@@ -681,6 +761,23 @@ La etapa de datos se considera aprobada cuando:
   de validation y test.
 - Agregadas pruebas de decodificación, clasificación, deduplicación, rechazo de entradas
   inválidas y asignación forzada a train.
+
+### Versión 2.2.0 — Todo train, caché de características y trabajo en la nube
+
+- Diagnóstico: el tope de `180` imágenes por fuente/etiqueta dejaba fuera `75 %` de
+  train. Con las `78,719` imágenes, un solo `hgb_depth_95` supera al ensamble anterior
+  (validation F1 `0.8766 -> 0.9019`; test muestreado accuracy `89.65 % -> 91.03 %`).
+- `extract-features`: caché por SHA-256 en `data/features/<extractor_id>/`, incremental
+  y en multiproceso (`94,781` imágenes en `~110 s`); `train-classic --features` entrena
+  sin releer imágenes y sin imágenes en disco.
+- `hub push/pull-model` y `hub push/pull-features`: modelo y características
+  compartidos en Hugging Face Hub; la app ofrece descargar el modelo si falta.
+- `notebooks/03_entrenar_en_la_nube.ipynb` (Colab) y `deploy/hf_space/` (demo web).
+- `audit-labels` y `apply-label-review`: revisión humana priorizada de etiquetas
+  sospechosas; las exclusiones confirmadas (`configs/excluded_images.csv`) solo
+  afectan a train.
+- HGB con más iteraciones (`max_iter=1000`, `n_iter_no_change=40`).
+- Descartados con evidencia: extractor a `128 px` y Bag of Visual Words (DAISY).
 
 ### Próximo hito operativo del equipo
 

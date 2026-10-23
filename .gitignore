@@ -15,10 +15,12 @@ data/interim/*
 data/processed/*
 data/external/*
 data/quarantine/*
+data/features/*
 !data/raw/.gitkeep
 !data/derived/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !data/external/.gitkeep
 !data/quarantine/.gitkeep
+!data/features/.gitkeep
 

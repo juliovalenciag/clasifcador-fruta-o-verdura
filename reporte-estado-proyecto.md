@@ -2,13 +2,37 @@
 
 **Fecha de corte:** 16 de octubre de 2026
 
-**Versión del proyecto:** `v2.1.0` ([pyproject.toml](file:///Users/chunkdunk/Developer/machine-learning/clasificador-frutas-verduras/pyproject.toml))
+**Versión del proyecto:** `v2.2.0` ([pyproject.toml](file:///Users/chunkdunk/Developer/machine-learning/clasificador-frutas-verduras/pyproject.toml))
 
 **Repositorio:** `https://github.com/juliovalenciag/clasifcador-fruta-o-verdura.git`
 
 **Alcance técnico:** Clasificación binaria (`fruta` vs `verdura`) bajo **criterio botánico estricto**, empleando exclusivamente **Machine Learning clásico** (`scikit-learn` + `scikit-image`, sin redes neuronales).
 
 ---
+
+## 0. Actualización `v2.2.0` (23 de octubre de 2026)
+
+**Causa raíz del techo de `~89.6 %`:** `--max-per-source-label 180` se aplicaba también a
+train, de modo que el modelo veía `19,097` de las `78,719` imágenes de entrenamiento
+disponibles (`24 %`). Con todas ellas (leídas desde una caché de características), un
+solo `hgb_depth_95` supera al ensamble anterior con las mismas particiones de evaluación:
+
+| Métrica | `v2.0.0` | `v2.2.0` |
+|---|---:|---:|
+| Validation F1 macro (`9,422`) | `0.8766` | **`0.9019`** |
+| Test muestreado accuracy / F1 macro (`9,293`) | `89.65 %` / `0.8701` | **`91.03 %` / `0.8863`** |
+| Test completo TTA accuracy / F1 macro (`13,141`) | `89.13 %` / `0.8523` | **`90.50 %` / `0.8701`** |
+| Recall / precision `verdura` (test muestreado) | `81.34 %` / `80.95 %` | **`82.40 %` / `84.45 %`** |
+| Tamaño del modelo | `43 MB` | **`8.7 MB`** |
+
+Experimentos descartados en validation: extractor a `128 px` (sin ganancia, el doble de
+costo) y Bag of Visual Words con DAISY + k-means (`+0.003` F1). Regresión conocida:
+`grocery_store` `91.17 % -> 90.21 %`. La auditoría out-of-fold (`audit-labels`) marca
+`1,370` imágenes de train (`2 %`) para revisión humana; las primeras hojas muestran
+caricaturas, jugos, productos empaquetados y escenas mixtas, concentradas en
+`Broccoli`, `Cauliflower`, `Onion` y `Carrot`. El flujo de equipo (caché de
+características, Hugging Face Hub, Colab y Space) se documenta en `README.md` y en la
+sección 3 de `guia-equipo.md`.
 
 ## 1. Resumen Ejecutivo y Salto de Desempeño (`v0.5.0` $\rightarrow$ `v1.1.0` $\rightarrow$ `v2.0.0`)
 
